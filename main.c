@@ -3,24 +3,50 @@
 #include <ctype.h>
 #include <string.h>
 
-typedef enum {
+typedef enum
+{
     NODE_NUMBER,
-    NODE_OPERATION
+    NODE_OPERATION,
+    NODE_PRINT,
+    NODE_INPUT,
+    NODE_VARIABLE,
 } NodeType;
 
-typedef struct Node {
+typedef struct Node
+{
     NodeType type;
-    union {
-        int value; // jeśli to liczba
-        struct {
-            char sign;        // np. '+', '*'
-            struct Node *a;   // lewe poddrzewo
-            struct Node *b;   // prawe poddrzewo
+    union
+    {
+        double value; // jeśli to liczba
+        struct
+        {
+            char sign;      // np. '+', '*'
+            struct Node *a; // lewe poddrzewo
+            struct Node *b; // prawe poddrzewo
         } op;
+        struct Node *expr; // dla PRINT – co wypisać
+        char *var_name;    // dla INPUT i VAR
     };
 } Node;
+typedef enum
+{
+    TOKEN_IDENT,   // nazwa zmiennej lub polecenia
+    TOKEN_NUMBER,  // liczba
+    TOKEN_STRING,  // tekst w cudzysłowie
+    TOKEN_KEYWORD, // słowo kluczowe (np. print)
+    TOKEN_LPAREN,
+    TOKEN_RPAREN,
+    TOKEN_LBRACE,
+    TOKEN_RBRACE,
+    TOKEN_SEMICOLON,
+    TOKEN_COMMA,
+    TOKEN_ASSIGN,
+    TOKEN_OPERATOR, // operator (np. +, -, *, /)
+    TOKEN_EOF       // koniec pliku
+} TokenType;
 
-typedef struct {
+typedef struct
+{
     TokenType type;
     char text[64];
 } Token;
@@ -29,31 +55,17 @@ typedef struct {
 Token tokens[MAX_TOKENS];
 int token_count = 0;
 
-typedef enum {
-    TOKEN_IDENT,      // nazwa zmiennej lub polecenia
-    TOKEN_NUMBER,     // liczba
-    TOKEN_STRING,     // tekst w cudzysłowie
-    TOKEN_KEYWORD,    // słowo kluczowe (np. print)
-    TOKEN_LPAREN,
-    TOKEN_RPAREN,
-    TOKEN_LBRACE,
-    TOKEN_RBRACE,
-    TOKEN_SEMICOLON,
-    TOKEN_COMMA,
-    TOKEN_ASSIGN,
-    TOKEN_OPERATOR,   // operator (np. +, -, *, /)
-    TOKEN_EOF         // koniec pliku
-} TokenType;
-
-Node* make_number(int value) {
-    Node* n = malloc(sizeof(Node));
+Node *make_number(int value)
+{
+    Node *n = malloc(sizeof(Node));
     n->type = NODE_NUMBER;
     n->value = value;
     return n;
 }
 
-Node* make_op(char sign, Node* a, Node* b) {
-    Node* n = malloc(sizeof(Node));
+Node *make_op(char sign, Node *a, Node *b)
+{
+    Node *n = malloc(sizeof(Node));
     n->type = NODE_OPERATION;
     n->op.sign = sign;
     n->op.a = a;
@@ -61,9 +73,69 @@ Node* make_op(char sign, Node* a, Node* b) {
     return n;
 }
 
+int pos = 0;
 
-void add_token(TokenType type, const char* text) {
-    if (token_count < MAX_TOKENS) {
+// Binding powers dla operatorów
+int get_binding_power(const char *op)
+{
+    if (strcmp(op, "*") == 0 || strcmp(op, "/") == 0)
+        return 20;
+    if (strcmp(op, "+") == 0 || strcmp(op, "-") == 0)
+        return 10;
+    return 0;
+}
+
+Node *parse_expr_bp(int min_bp)
+{
+    Node *left = NULL;
+
+    // operand
+    if (tokens[pos].type == TOKEN_NUMBER)
+    {
+        left = make_number(atoi(tokens[pos].text));
+        pos++;
+    }
+    else if (tokens[pos].type == TOKEN_LPAREN)   // <-- NOWE
+    {
+        pos++; // pomiń '('
+        left = parse_expr_bp(0); // rekurencyjnie wczytaj wyrażenie w nawiasie
+        if (tokens[pos].type == TOKEN_RPAREN)
+        {
+            pos++; // pomiń ')'
+        }
+        else
+        {
+            printf("Błąd: brakujący ')'\n");
+            return NULL;
+        }
+    }
+    else
+    {
+        printf("Błąd składni\n");
+        return NULL;
+    }
+
+    // operator loop
+    while (tokens[pos].type == TOKEN_OPERATOR)
+    {
+        int bp = get_binding_power(tokens[pos].text);
+        if (bp < min_bp)
+            break;
+
+        char op = tokens[pos].text[0];
+        pos++;
+
+        Node *right = parse_expr_bp(bp + 1);
+        left = make_op(op, left, right);
+    }
+
+    return left;
+}
+
+void add_token(TokenType type, const char *text)
+{
+    if (token_count < MAX_TOKENS)
+    {
         tokens[token_count].type = type;
         strncpy(tokens[token_count].text, text, 63);
         tokens[token_count].text[63] = '\0';
@@ -72,7 +144,7 @@ void add_token(TokenType type, const char* text) {
 }
 
 // Tablica słów kluczowych
-const char* keywords[] = {
+const char *keywords[] = {
     "pisz",
     "podaj",
     "usun",
@@ -82,54 +154,71 @@ const char* keywords[] = {
     "funkcja",
     "zwróć",
     "zmienna",
-    "wkółko"
-};
+    "wkółko"};
 const int keywords_count = sizeof(keywords) / sizeof(keywords[0]);
 
-int is_keyword(const char* text) {
-    for (int i = 0; i < keywords_count; i++) {
-        if (strcmp(text, keywords[i]) == 0) return 1;
+int is_keyword(const char *text)
+{
+    for (int i = 0; i < keywords_count; i++)
+    {
+        if (strcmp(text, keywords[i]) == 0)
+            return 1;
     }
     return 0;
 }
 
-void lex(const char* src) {
+void lex(const char *src)
+{
     int i = 0;
-    while (src[i] != '\0') {
-        if (isspace(src[i])) { i++; continue; }
+    while (src[i] != '\0')
+    {
+        if (isspace(src[i]))
+        {
+            i++;
+            continue;
+        }
 
-
-        if (src[i] == '"') { // string w cudzysłowie
+        if (src[i] == '"')
+        {        // string w cudzysłowie
             i++; // pomiń otwierający cudzysłów
             int start = i;
-            while (src[i] != '"' && src[i] != '\0') i++;
+            while (src[i] != '"' && src[i] != '\0')
+                i++;
             int len = i - start;
             char buf[64];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
             add_token(TOKEN_STRING, buf);
-            if (src[i] == '"') i++; // pomiń zamykający cudzysłów
+            if (src[i] == '"')
+                i++; // pomiń zamykający cudzysłów
             continue;
         }
 
-        if (isalpha(src[i])) { // ident lub keyword
+        if (isalpha(src[i]))
+        { // ident lub keyword
             int start = i;
-            while (isalnum(src[i])) i++;
+            while (isalnum(src[i]))
+                i++;
             int len = i - start;
             char buf[64];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
-            if (is_keyword(buf)) {
+            if (is_keyword(buf))
+            {
                 add_token(TOKEN_KEYWORD, buf);
-            } else {
+            }
+            else
+            {
                 add_token(TOKEN_IDENT, buf);
             }
             continue;
         }
 
-        if (isdigit(src[i])) { // liczba
+        if (isdigit(src[i]))
+        { // liczba
             int start = i;
-            while (isdigit(src[i])) i++;
+            while (isdigit(src[i]))
+                i++;
             int len = i - start;
             char buf[64];
             strncpy(buf, src + start, len);
@@ -142,21 +231,47 @@ void lex(const char* src) {
         char c = src[i];
         char buf[2] = {c, '\0'};
         if (c == '=' || c == '+' || c == '-' || c == '*' || c == '/' ||
-            c == '(' || c == ')' || c == ';' || c == '{' || c == '}') {
-            switch(c) {
-                case '=': add_token(TOKEN_ASSIGN, buf); break;
-                case '+': add_token(TOKEN_OPERATOR, buf); break;
-                case '-': add_token(TOKEN_OPERATOR, buf); break;
-                case '*': add_token(TOKEN_OPERATOR, buf); break;
-                case '/': add_token(TOKEN_OPERATOR, buf); break;
-                case '(': add_token(TOKEN_LPAREN, buf); break;
-                case ')': add_token(TOKEN_RPAREN, buf); break;
-                case '{': add_token(TOKEN_LBRACE, buf); break;
-                case '}': add_token(TOKEN_RBRACE, buf); break;
-                case ';': add_token(TOKEN_SEMICOLON, buf); break;
-                case ',': add_token(TOKEN_COMMA, buf); break;
+            c == '(' || c == ')' || c == ';' || c == '{' || c == '}' || c == ',')
+        {
+            switch (c)
+            {
+            case '=':
+                add_token(TOKEN_ASSIGN, buf);
+                break;
+            case '+':
+                add_token(TOKEN_OPERATOR, buf);
+                break;
+            case '-':
+                add_token(TOKEN_OPERATOR, buf);
+                break;
+            case '*':
+                add_token(TOKEN_OPERATOR, buf);
+                break;
+            case '/':
+                add_token(TOKEN_OPERATOR, buf);
+                break;
+            case '(':
+                add_token(TOKEN_LPAREN, buf);
+                break;
+            case ')':
+                add_token(TOKEN_RPAREN, buf);
+                break;
+            case '{':
+                add_token(TOKEN_LBRACE, buf);
+                break;
+            case '}':
+                add_token(TOKEN_RBRACE, buf);
+                break;
+            case ';':
+                add_token(TOKEN_SEMICOLON, buf);
+                break;
+            case ',':
+                add_token(TOKEN_COMMA, buf);
+                break;
             }
-        } else {
+        }
+        else
+        {
             add_token(TOKEN_IDENT, buf); // traktuj nieznane jako ident
         }
         i++;
@@ -168,114 +283,134 @@ void lex(const char* src) {
 
 // Prosta tablica zmiennych
 #define MAX_VARS 32
-char var_names[MAX_VARS][64];
-char var_values[MAX_VARS][64];
+typedef enum{
+    TYPE_INT,
+    TYPE_DOUBLE,
+    TYPE_STRING
+} VarType;
+
+typedef struct {
+    char name[64];
+    VarType type;
+    union {
+        int intValue;
+        double doubleValue;
+        char stringValue[64];
+    } value;
+} Variable;
+
+Variable variables[MAX_VARS];
 int var_count = 0;
 
-// Zapisz wartosc zmiennej
-void set_var(const char* name, const char* value) {
-    for (int i = 0; i < var_count; i++) {
-        if (strcmp(var_names[i], name) == 0) {
-            strncpy(var_values[i], value, 63);
-            var_values[i][63] = '\0';
-            return;
-        }
+void token_to_variable(const char* name, const char* value) {
+    Variable var;
+    char* end;
+    if(var_count >= MAX_VARS) {
+        printf("Za dużo zmiennych!\n");
+        return;
     }
-    if (var_count < MAX_VARS) {
-        strncpy(var_names[var_count], name, 63);
-        var_names[var_count][63] = '\0';
-        strncpy(var_values[var_count], value, 63);
-        var_values[var_count][63] = '\0';
-        var_count++;
+    strncpy(var.name, name, 63);
+    var.name[63] = '\0';
+    long intVal = strtol(value, &end, 10);
+    if(end != value && *end == '\0') {
+        var.type = TYPE_INT;
+        var.value.intValue = (int)intVal;
+        variables[var_count++] = var;
+        return;
     }
+    double doubleVal = strtod(value, &end);
+    if(end != value && *end == '\0') {
+        var.type = TYPE_DOUBLE;
+        var.value.doubleValue = doubleVal;
+        variables[var_count++] = var;
+        return;
+    }
+    var.type = TYPE_STRING;
+    strncpy(var.value.stringValue, value, 63);
+    var.value.stringValue[63] = '\0';
+    variables[var_count++] = var;
 }
 
-// Pobierz wartosc zmiennej
-const char* get_var(const char* name) {
-    for (int i = 0; i < var_count; i++) {
-        if (strcmp(var_names[i], name) == 0) {
-            return var_values[i];
+Variable* get_variable(const char* name) {
+    for(int i = 0; i < var_count; i++) {
+        if(strcmp(variables[i].name, name) == 0) {
+            return &variables[i];
         }
     }
     return NULL;
 }
 
-void parse() {
-    for (int i = 0; i < token_count; i++) {
-        if (tokens[i].type == TOKEN_KEYWORD) {
-            if (strcmp(tokens[i].text, "pisz") == 0) {
-                if (i + 1 < token_count) {
-                    if (tokens[i+1].type == TOKEN_IDENT) {
-                        const char* val = get_var(tokens[i+1].text);
-                        if (val) {
-                            printf("Wypisz: %s\n", val);
-                        } else {
-                            printf("Wypisz: %s\n", tokens[i+1].text);
-                        }
-                        i++;
-                    } else if (tokens[i+1].type == TOKEN_STRING) {
-                        printf("Wypisz: %s\n", tokens[i+1].text);
-                        i++;
-                    }else if (tokens[i+1].type == TOKEN_NUMBER) {
-                        char buf[64];
-                        sprintf(buf, "%d", atoi(tokens[i+1].text));
-                        printf("Wypisz: %s\n", buf);
-                        i++;
-                    } else {
-                        printf("Błąd składni przy 'pisz'\n");
-                    }
-                }
-            } else if (strcmp(tokens[i].text, "podaj") == 0) {
-                if (i + 1 < token_count && tokens[i+1].type == TOKEN_IDENT) {
-                    char buf[64];
-                    printf("Podaj wartosc dla %s: ", tokens[i+1].text);
-                    fgets(buf, sizeof(buf), stdin);
-                    buf[strcspn(buf, "\n")] = '\0';
-                    set_var(tokens[i+1].text, buf);
-                    i++;
-                }
-            } else if (strcmp(tokens[i].text, "zmienna") == 0) {
-                if (i + 2 < token_count && tokens[i+1].type == TOKEN_IDENT && tokens[i+2].type == TOKEN_ASSIGN && i + 3 < token_count) {
-                    char buf[64];
-                    if (tokens[i+3].type == TOKEN_NUMBER || tokens[i+3].type == TOKEN_STRING) {
-                        strncpy(buf, tokens[i+3].text, 63);
-                        buf[63] = '\0';
-                    } else if (tokens[i+3].type == TOKEN_IDENT) {
-                        const char* val = get_var(tokens[i+3].text);
-                        if (val) {
-                            strncpy(buf, val, 63);
-                            buf[63] = '\0';
-                        } else {
-                            printf("Błąd: niezdefiniowana zmienna %s\n", tokens[i+3].text);
-                            i += 3;
-                            continue;
-                        }
-                    } else {
-                        printf("Błąd składni przy deklaracji zmiennej\n");
-                        i += 3;
-                        continue;
-                    }
-                    set_var(tokens[i+1].text, buf);
-                    i += 3;
-                }
-            } else if (strcmp(tokens[i].text, "usun") == 0) {
-                if (i + 1 < token_count && tokens[i+1].type == TOKEN_IDENT) {
-                    set_var(tokens[i+1].text, NULL);
-                    i++;
-                }
+double eval(Node *n)
+{
+    if (n->type == NODE_NUMBER)
+    {
+        return n->value;
+    }
+    else if (n->type == NODE_OPERATION)
+    {
+        double a = eval(n->op.a);
+        double b = eval(n->op.b);
+        switch (n->op.sign)
+        {
+        case '+':
+            return a + b;
+        case '-':
+            return a - b;
+        case '*':
+            return a * b;
+        case '/':
+            return a / b;
+        }
+    }
+    else if (n->type == NODE_VARIABLE)
+    {
+        for (int i = 0; i < var_count; i++)
+        {
+            Variable *var = get_variable(n->var_name);
+        }
+        printf("Nieznana zmienna: %s\n", n->var_name);
+    }
+    return 0;
+}
+void parse()
+{
+    while (pos < token_count && tokens[pos].type != TOKEN_EOF)
+    {
+        // wyrażenie może zaczynać się od liczby, identyfikatora albo nawiasu
+        if (tokens[pos].type == TOKEN_NUMBER ||
+            tokens[pos].type == TOKEN_IDENT ||
+            tokens[pos].type == TOKEN_LPAREN)
+        {
+            Node *expr = parse_expr_bp(0); // wciąga całe wyrażenie
+            if (expr)
+            {
+                printf("Wynik: %lf\n", eval(expr));
             }
+            if (tokens[pos].type == TOKEN_SEMICOLON)
+            {
+                pos++; // pomiń średnik
+            }
+        }
+        else
+        {
+            // jeśli to nie początek wyrażenia, pomiń token (np. EOF albo coś nieoczekiwanego)
+            pos++;
         }
     }
 }
 
-int main(int argc, char *argv[]) {
-    if (argc < 2) {
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2)
+    {
         printf("Użycie: %s <plik.mylang>\n", argv[0]);
         return 1;
     }
 
     FILE *file = fopen(argv[1], "r");
-    if (!file) {
+    if (!file)
+    {
         printf("Nie można otworzyć pliku: %s\n", argv[1]);
         return 1;
     }
@@ -286,9 +421,9 @@ int main(int argc, char *argv[]) {
 
     lex(src);
     // Wypisz wszystkie tokeny
-    for (int i = 0; i < token_count; i++) {
-        printf("Token %d: typ=%d, wartosc='%s'\n", i, tokens[i].type, tokens[i].text);
-    }
+    // for (int i = 0; i < token_count; i++) {
+    //     printf("Token %d: typ=%d, wartosc='%s'\n", i, tokens[i].type, tokens[i].text);
+    // }
     parse();
     return 0;
 }
