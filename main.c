@@ -15,18 +15,18 @@ typedef enum
 typedef struct Node
 {
     NodeType type;
-    union
+    // Pola wspólne dla wszystkich typów
+    double value;      // dla liczb i obliczonych wartości
+    char *var_name;    // dla zmiennych
+    struct Node *expr; // dla wyrażeń (PRINT itp.)
+    
+    // Pola specyficzne dla operatorów
+    struct
     {
-        double value; // jeśli to liczba
-        struct
-        {
-            char sign;      // np. '+', '*'
-            struct Node *a; // lewe poddrzewo
-            struct Node *b; // prawe poddrzewo
-        } op;
-        struct Node *expr; // dla PRINT – co wypisać
-        char *var_name;    // dla INPUT i VAR
-    };
+        char sign;      // np. '+', '*'
+        struct Node *a; // lewe poddrzewo
+        struct Node *b; // prawe poddrzewo
+    } op;
 } Node;
 typedef enum
 {
@@ -54,6 +54,43 @@ typedef struct
 #define MAX_TOKENS 256
 Token tokens[MAX_TOKENS];
 int token_count = 0;
+
+#define MAX_VARS 32
+
+typedef enum {
+    TYPE_INT,
+    TYPE_DOUBLE,
+    TYPE_STRING
+} VarType;
+
+typedef struct {
+    char name[64]; // <-- tu trzymamy nazwę zmiennej
+    VarType type;
+    union {
+        int intValue;
+        double doubleValue;
+        char stringValue[64];
+    } value;
+} Variable;
+
+Variable variables[MAX_VARS];
+int var_count = 0;
+
+Variable *get_variable(const char *name)
+{
+    if (!name) return NULL; // sprawdź NULL
+    for (int i = 0; i < var_count; i++)
+    {
+        if (strcmp(variables[i].name, name) == 0)
+        {
+            return &variables[i];
+        }
+    }
+    return NULL;
+}
+
+// Deklaracje funkcji
+double eval(Node *n);
 
 Node *make_number(int value)
 {
@@ -95,9 +132,25 @@ Node *parse_expr_bp(int min_bp)
         left = make_number(atoi(tokens[pos].text));
         pos++;
     }
-    else if (tokens[pos].type == TOKEN_LPAREN)   // <-- NOWE
+    else if (tokens[pos].type == TOKEN_IDENT)
     {
-        pos++; // pomiń '('
+        if(!get_variable(tokens[pos].text))
+        {
+            printf("Błąd: nieznana zmienna %s\n", tokens[pos].text);
+            return NULL;
+        }
+        char *var_name = tokens[pos].text;
+        pos++;
+        left = malloc(sizeof(Node));
+        left->type = NODE_VARIABLE;
+        // Bezpieczne kopiowanie nazwy zmiennej
+        left->var_name = malloc(strlen(var_name) + 1);
+        strcpy(left->var_name, var_name);
+        left->value = 0; // Wartość będzie ustawiona przez eval jeśli potrzebne
+    }
+    else if (tokens[pos].type == TOKEN_LPAREN) // <-- NOWE
+    {
+        pos++;                   // pomiń '('
         left = parse_expr_bp(0); // rekurencyjnie wczytaj wyrażenie w nawiasie
         if (tokens[pos].type == TOKEN_RPAREN)
         {
@@ -130,6 +183,73 @@ Node *parse_expr_bp(int min_bp)
     }
 
     return left;
+}
+
+Node *parse_stmt()
+{
+    if (tokens[pos].type == TOKEN_KEYWORD && strcmp(tokens[pos].text, "zmienna") == 0)
+    {
+        pos++;
+        if (tokens[pos].type == TOKEN_IDENT)
+        {
+            char *var_name = tokens[pos].text;
+            pos++;
+            if (tokens[pos].type == TOKEN_ASSIGN)
+            {
+                pos++;
+                Node *expr = parse_expr_bp(0);
+                if (tokens[pos].type == TOKEN_SEMICOLON)
+                {
+                    pos++;
+                }
+
+                // Oblicz wartość wyrażenia
+                double result = eval(expr);
+
+                // Sprawdź czy zmienna już istnieje (tylko jesli nie jest to pierwsza deklaracja)
+                if (var_count > 0) {
+                    Variable *existing_var = get_variable(var_name);
+                    if (existing_var)
+                    {
+                        printf("Błąd: zmienna %s już istnieje\n", var_name);
+                        return NULL;
+                    }
+                }
+
+                // Dodaj zmienną do tablicy variables
+                if (var_count < MAX_VARS)
+                {
+                    Variable new_var;
+                    strncpy(new_var.name, var_name, 63);
+                    new_var.name[63] = '\0';
+                    new_var.type = TYPE_DOUBLE;
+                    new_var.value.doubleValue = result;
+                    
+                    variables[var_count++] = new_var;
+                }
+                else
+                {
+                    printf("Błąd: przekroczono limit zmiennych\n");
+                    return NULL;
+                }
+
+                Node *n = malloc(sizeof(Node));
+                n->type = NODE_VARIABLE;
+                // Bezpieczne kopiowanie nazwy zmiennej
+                n->var_name = malloc(strlen(var_name) + 1);
+                strcpy(n->var_name, var_name);
+                n->value = result;
+                return n;
+            }
+            return NULL;
+        }
+        else
+        {
+            printf("Błąd: oczekiwano identyfikatora po 'zmienna'\n");
+            return NULL;
+        }
+    }
+    return NULL;
 }
 
 void add_token(TokenType type, const char *text)
@@ -279,67 +399,6 @@ void lex(const char *src)
     add_token(TOKEN_EOF, "EOF");
 }
 
-// Prosty parser: rozpoznaje 'pisz' <ident>
-
-// Prosta tablica zmiennych
-#define MAX_VARS 32
-typedef enum{
-    TYPE_INT,
-    TYPE_DOUBLE,
-    TYPE_STRING
-} VarType;
-
-typedef struct {
-    char name[64];
-    VarType type;
-    union {
-        int intValue;
-        double doubleValue;
-        char stringValue[64];
-    } value;
-} Variable;
-
-Variable variables[MAX_VARS];
-int var_count = 0;
-
-void token_to_variable(const char* name, const char* value) {
-    Variable var;
-    char* end;
-    if(var_count >= MAX_VARS) {
-        printf("Za dużo zmiennych!\n");
-        return;
-    }
-    strncpy(var.name, name, 63);
-    var.name[63] = '\0';
-    long intVal = strtol(value, &end, 10);
-    if(end != value && *end == '\0') {
-        var.type = TYPE_INT;
-        var.value.intValue = (int)intVal;
-        variables[var_count++] = var;
-        return;
-    }
-    double doubleVal = strtod(value, &end);
-    if(end != value && *end == '\0') {
-        var.type = TYPE_DOUBLE;
-        var.value.doubleValue = doubleVal;
-        variables[var_count++] = var;
-        return;
-    }
-    var.type = TYPE_STRING;
-    strncpy(var.value.stringValue, value, 63);
-    var.value.stringValue[63] = '\0';
-    variables[var_count++] = var;
-}
-
-Variable* get_variable(const char* name) {
-    for(int i = 0; i < var_count; i++) {
-        if(strcmp(variables[i].name, name) == 0) {
-            return &variables[i];
-        }
-    }
-    return NULL;
-}
-
 double eval(Node *n)
 {
     if (n->type == NODE_NUMBER)
@@ -352,26 +411,38 @@ double eval(Node *n)
         double b = eval(n->op.b);
         switch (n->op.sign)
         {
-        case '+':
-            return a + b;
-        case '-':
-            return a - b;
-        case '*':
-            return a * b;
-        case '/':
-            return a / b;
+        case '+': return a + b;
+        case '-': return a - b;
+        case '*': return a * b;
+        case '/': return a / b;
         }
     }
     else if (n->type == NODE_VARIABLE)
     {
-        for (int i = 0; i < var_count; i++)
-        {
-            Variable *var = get_variable(n->var_name);
+        // Sprawdź czy n i n->var_name nie są NULL
+        if (!n || !n->var_name) {
+            printf("Błąd: nieprawidłowy węzeł zmiennej\n");
+            return 0;
         }
-        printf("Nieznana zmienna: %s\n", n->var_name);
+        
+        // Szukamy zmiennej w tablicy variables
+        Variable *var = get_variable(n->var_name);
+        if (var)
+        {
+            if (var->type == TYPE_INT)
+                return var->value.intValue;
+            if (var->type == TYPE_DOUBLE)
+                return var->value.doubleValue;
+            printf("Błąd: zmienna %s nie jest liczbą\n", n->var_name);
+            return 0;
+        }
+        printf("Nieznana zmienna: %s\n", n->var_name ? n->var_name : "(null)");
+        return 0;
     }
     return 0;
 }
+
+
 void parse()
 {
     while (pos < token_count && tokens[pos].type != TOKEN_EOF)
@@ -391,6 +462,15 @@ void parse()
                 pos++; // pomiń średnik
             }
         }
+        else if (tokens[pos].type == TOKEN_KEYWORD)
+        {
+            Node *stmt = parse_stmt();
+            if(stmt)
+            {
+                // Dla deklaracji zmiennej nie wywołujemy eval - zmienna już została zapisana w parse_stmt
+                free(stmt);
+            }
+        }
         else
         {
             // jeśli to nie początek wyrażenia, pomiń token (np. EOF albo coś nieoczekiwanego)
@@ -398,7 +478,6 @@ void parse()
         }
     }
 }
-
 
 int main(int argc, char *argv[])
 {
@@ -420,10 +499,27 @@ int main(int argc, char *argv[])
     fclose(file);
 
     lex(src);
-    // Wypisz wszystkie tokeny
-    // for (int i = 0; i < token_count; i++) {
-    //     printf("Token %d: typ=%d, wartosc='%s'\n", i, tokens[i].type, tokens[i].text);
-    // }
+    
+    // Wypisz wszystkie tokeny dla testu
+    printf("=== TOKENY ===\n");
+    for(int i = 0; i < token_count; i++)
+    {
+        printf("Token %d: typ=%d, tekst='%s'\n", i, tokens[i].type, tokens[i].text);
+    }
+    printf("==============\n\n");
+    
     parse();
+    for (int i = 0; i < var_count; i++)
+    {
+        printf("Zmienna %s = ", variables[i].name);
+        if (variables[i].type == TYPE_INT)
+            printf("%d\n", variables[i].value.intValue);
+        else if (variables[i].type == TYPE_DOUBLE)
+            printf("%lf\n", variables[i].value.doubleValue);
+        else if (variables[i].type == TYPE_STRING)
+            printf("'%s'\n", variables[i].value.stringValue);
+        else
+            printf("Nieznany typ\n");
+    }
     return 0;
 }
