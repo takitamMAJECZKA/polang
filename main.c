@@ -92,7 +92,7 @@ Variable *get_variable(const char *name)
 // Deklaracje funkcji
 double eval(Node *n);
 
-Node *make_number(int value)
+Node *make_number(double value)
 {
     Node *n = malloc(sizeof(Node));
     n->type = NODE_NUMBER;
@@ -129,7 +129,7 @@ Node *parse_expr_bp(int min_bp)
     // operand
     if (tokens[pos].type == TOKEN_NUMBER)
     {
-        left = make_number(atoi(tokens[pos].text));
+        left = make_number(atof(tokens[pos].text));
         pos++;
     }
     else if (tokens[pos].type == TOKEN_IDENT)
@@ -335,10 +335,17 @@ void lex(const char *src)
         }
 
         if (isdigit(src[i]))
-        { // liczba
+        { // liczba (z obsługą kropki dziesiętnej)
             int start = i;
             while (isdigit(src[i]))
                 i++;
+            // Sprawdź czy jest kropka dziesiętna
+            if (src[i] == '.')
+            {
+                i++; // pomiń kropkę
+                while (isdigit(src[i]))
+                    i++;
+            }
             int len = i - start;
             char buf[64];
             strncpy(buf, src + start, len);
@@ -351,7 +358,7 @@ void lex(const char *src)
         char c = src[i];
         char buf[2] = {c, '\0'};
         if (c == '=' || c == '+' || c == '-' || c == '*' || c == '/' ||
-            c == '(' || c == ')' || c == ';' || c == '{' || c == '}' || c == ',')
+            c == '(' || c == ')' || c == ';' || c == '{' || c == '}' || c == ',' )
         {
             switch (c)
             {
@@ -500,13 +507,10 @@ int main(int argc, char *argv[])
 
     lex(src);
     
-    // Wypisz wszystkie tokeny dla testu
-    printf("=== TOKENY ===\n");
     for(int i = 0; i < token_count; i++)
     {
         printf("Token %d: typ=%d, tekst='%s'\n", i, tokens[i].type, tokens[i].text);
     }
-    printf("==============\n\n");
     
     parse();
     for (int i = 0; i < var_count; i++)

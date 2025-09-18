@@ -1,4 +1,1 @@
-zmienna x = (2 + 2 )* 2 + 8 -2;
-zmienna z = 3;
-
-zmienna y = z + 1;
+zmienna y = "asd";
