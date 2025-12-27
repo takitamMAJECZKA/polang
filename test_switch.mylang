@@ -1,0 +1,53 @@
+// Test switch statement
+
+zmienna x = 2;
+
+pisz "Test switch (liczba):";
+wybor (x) {
+    przypadek 1:
+        pisz "Jeden";
+        zlam;
+    przypadek 2:
+        pisz "Dwa";
+        zlam;
+    przypadek 3:
+        pisz "Trzy";
+        zlam;
+    domyslnie:
+        pisz "Inna liczba";
+}
+
+pisz "Test switch (napis):";
+zmienna s = "b";
+wybor (s) {
+    przypadek "a":
+        pisz "Litera A";
+        zlam;
+    przypadek "b":
+        pisz "Litera B";
+        zlam;
+    domyslnie:
+        pisz "Inna litera";
+}
+
+pisz "Test switch (fallthrough):";
+zmienna y = 1;
+wybor (y) {
+    przypadek 1:
+        pisz "Jeden (fallthrough)";
+    przypadek 2:
+        pisz "Dwa (fallthrough)";
+        zlam;
+    domyslnie:
+        pisz "Domyslnie";
+}
+
+pisz "Test switch (domyslnie):";
+zmienna z = 10;
+wybor (z) {
+    przypadek 1:
+        pisz "Jeden";
+        zlam;
+    domyslnie:
+        pisz "Nieznana liczba";
+}

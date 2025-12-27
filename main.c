@@ -40,7 +40,13 @@ typedef enum
     NODE_CLASS_DEF,
     NODE_NEW,
     NODE_THIS,
-    NODE_MEMBER_ASSIGN
+    NODE_MEMBER_ASSIGN,
+    NODE_NULL,
+    NODE_TRY,
+    NODE_THROW,
+    NODE_SWITCH,
+    NODE_CASE,
+    NODE_DEFAULT
 } NodeType;
 
 // Forward declaration
@@ -130,6 +136,27 @@ typedef struct Node
         struct Node **args;
         int arg_count;
     } new_inst;
+
+    // Dla TRY-CATCH
+    struct {
+        struct Node *try_body;
+        struct Node *catch_body;
+        char *catch_var;
+    } try_catch;
+
+    // Dla SWITCH
+    struct {
+        struct Node *expr;
+        struct Node **cases;
+        int case_count;
+        struct Node *default_case;
+    } switch_stmt;
+
+    // Dla CASE
+    struct {
+        struct Node *value;
+        struct Node *body;
+    } case_stmt;
 } Node;
 typedef enum
 {
@@ -180,6 +207,13 @@ typedef enum
     TOKEN_PUBLIC,
     TOKEN_NEW,
     TOKEN_THIS,
+    TOKEN_NULL,
+    TOKEN_TRY,
+    TOKEN_CATCH,
+    TOKEN_THROW,
+    TOKEN_SWITCH,
+    TOKEN_CASE,
+    TOKEN_DEFAULT,
     TOKEN_EOF       // koniec pliku
 } TokenType;
 
@@ -200,7 +234,8 @@ typedef enum {
     TYPE_DICT,
     TYPE_INT,
     TYPE_CLASS,
-    TYPE_INSTANCE
+    TYPE_INSTANCE,
+    TYPE_NULL
 } VarType;
 
 // Forward declarations
@@ -556,6 +591,9 @@ Array *return_array = NULL;
 Dict *return_dict = NULL;
 struct Class *return_class = NULL;
 struct Instance *return_instance = NULL;
+volatile int is_exception = 0;
+double exception_value = 0;
+char *exception_string = NULL;
 
 void free_env(Env *env) {
     if (!env) return;
@@ -736,14 +774,12 @@ Node *parse_expr_bp(int min_bp)
         node->type = NODE_THIS;
         left = node;
     }
-    else if (tokens[pos].type == TOKEN_KEYWORD && strcmp(tokens[pos].text, "podaj") == 0)
+    else if (tokens[pos].type == TOKEN_NULL)
     {
         pos++;
-        left = malloc(sizeof(Node));
-        left->type = NODE_INPUT;
-        left->value = 0;
-        left->string_value = NULL;
-        left->var_name = NULL;
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_NULL;
+        left = node;
     }
     else if (tokens[pos].type == TOKEN_LBRACKET)
     {
@@ -1039,6 +1075,17 @@ Node *parse_stmt()
                     if (tokens[pos].type == TOKEN_COMMA) pos++;
                 }
                 if (tokens[pos].type == TOKEN_RPAREN) pos++;
+            } else {
+                while (tokens[pos].type == TOKEN_IDENT) {
+                    method->func.args[method->func.arg_count] = strdup(tokens[pos].text);
+                    method->func.arg_count++;
+                    pos++;
+                    if (tokens[pos].type == TOKEN_COMMA) {
+                        pos++;
+                    } else {
+                        break;
+                    }
+                }
             }
             
             method->func.body = parse_stmt();
@@ -1211,6 +1258,18 @@ Node *parse_stmt()
                         if (tokens[pos].type == TOKEN_COMMA) pos++;
                     }
                     if (tokens[pos].type == TOKEN_RPAREN) pos++;
+                } else {
+                    while (tokens[pos].type == TOKEN_IDENT) {
+                        node->func.args[node->func.arg_count] = malloc(strlen(tokens[pos].text) + 1);
+                        strcpy(node->func.args[node->func.arg_count], tokens[pos].text);
+                        node->func.arg_count++;
+                        pos++;
+                        if (tokens[pos].type == TOKEN_COMMA) {
+                            pos++;
+                        } else {
+                            break;
+                        }
+                    }
                 }
                 
                 node->func.body = parse_stmt(); // blok
@@ -1234,6 +1293,146 @@ Node *parse_stmt()
             node->type = NODE_CONTINUE;
             return node;
         }
+        else if (strcmp(tokens[pos].text, "podaj") == 0)
+        {
+            pos++;
+            if (tokens[pos].type != TOKEN_IDENT) {
+                printf("Błąd: oczekiwano nazwy zmiennej po 'podaj'\n");
+                return NULL;
+            }
+            char *var_name = tokens[pos].text;
+            pos++;
+            if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+            
+            Node *node = calloc(1, sizeof(Node));
+            node->type = NODE_INPUT;
+            node->var_name = strdup(var_name);
+            return node;
+        }
+    }
+    
+    if (tokens[pos].type == TOKEN_TRY) {
+        pos++;
+        Node *try_body = parse_stmt();
+        Node *catch_body = NULL;
+        char *catch_var = NULL;
+        
+        if (tokens[pos].type == TOKEN_CATCH) {
+            pos++;
+            if (tokens[pos].type == TOKEN_LPAREN) {
+                pos++;
+                if (tokens[pos].type == TOKEN_IDENT) {
+                    catch_var = strdup(tokens[pos].text);
+                    pos++;
+                }
+                if (tokens[pos].type == TOKEN_RPAREN) pos++;
+            } else if (tokens[pos].type == TOKEN_IDENT) {
+                catch_var = strdup(tokens[pos].text);
+                pos++;
+            }
+            catch_body = parse_stmt();
+        }
+        
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_TRY;
+        node->try_catch.try_body = try_body;
+        node->try_catch.catch_body = catch_body;
+        node->try_catch.catch_var = catch_var;
+        return node;
+    }
+    
+    if (tokens[pos].type == TOKEN_THROW) {
+        pos++;
+        Node *expr = parse_expr_bp(0);
+        if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+        
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_THROW;
+        node->expr = expr;
+        return node;
+    }
+
+    if (tokens[pos].type == TOKEN_SWITCH) {
+        pos++;
+        if (tokens[pos].type != TOKEN_LPAREN) {
+            printf("Błąd: oczekiwano '('\n");
+            return NULL;
+        }
+        pos++;
+        Node *expr = parse_expr_bp(0);
+        if (tokens[pos].type != TOKEN_RPAREN) {
+            printf("Błąd: oczekiwano ')'\n");
+            return NULL;
+        }
+        pos++;
+        if (tokens[pos].type != TOKEN_LBRACE) {
+            printf("Błąd: oczekiwano '{'\n");
+            return NULL;
+        }
+        pos++;
+
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_SWITCH;
+        node->switch_stmt.expr = expr;
+        node->switch_stmt.cases = malloc(sizeof(Node*) * 32);
+        node->switch_stmt.case_count = 0;
+        node->switch_stmt.default_case = NULL;
+
+        while (tokens[pos].type != TOKEN_RBRACE && tokens[pos].type != TOKEN_EOF) {
+            if (tokens[pos].type == TOKEN_CASE) {
+                pos++;
+                Node *val = parse_expr_bp(0);
+                if (tokens[pos].type != TOKEN_COLON) {
+                    printf("Błąd: oczekiwano ':' po przypadek\n");
+                    return NULL;
+                }
+                pos++;
+                
+                // Parse statements until next case/default/end
+                Node *block = calloc(1, sizeof(Node));
+                block->type = NODE_BLOCK;
+                block->block.stmts = malloc(sizeof(Node*) * 32);
+                block->block.count = 0;
+                
+                while (tokens[pos].type != TOKEN_CASE && tokens[pos].type != TOKEN_DEFAULT && 
+                       tokens[pos].type != TOKEN_RBRACE && tokens[pos].type != TOKEN_EOF) {
+                    Node *stmt = parse_stmt();
+                    if (stmt) block->block.stmts[block->block.count++] = stmt;
+                }
+                
+                Node *case_node = calloc(1, sizeof(Node));
+                case_node->type = NODE_CASE;
+                case_node->case_stmt.value = val;
+                case_node->case_stmt.body = block;
+                
+                node->switch_stmt.cases[node->switch_stmt.case_count++] = case_node;
+            } else if (tokens[pos].type == TOKEN_DEFAULT) {
+                pos++;
+                if (tokens[pos].type != TOKEN_COLON) {
+                    printf("Błąd: oczekiwano ':' po domyslnie\n");
+                    return NULL;
+                }
+                pos++;
+                
+                Node *block = calloc(1, sizeof(Node));
+                block->type = NODE_BLOCK;
+                block->block.stmts = malloc(sizeof(Node*) * 32);
+                block->block.count = 0;
+                
+                while (tokens[pos].type != TOKEN_CASE && tokens[pos].type != TOKEN_DEFAULT && 
+                       tokens[pos].type != TOKEN_RBRACE && tokens[pos].type != TOKEN_EOF) {
+                    Node *stmt = parse_stmt();
+                    if (stmt) block->block.stmts[block->block.count++] = stmt;
+                }
+                
+                node->switch_stmt.default_case = block;
+            } else {
+                // Skip unexpected tokens inside switch block
+                pos++;
+            }
+        }
+        if (tokens[pos].type == TOKEN_RBRACE) pos++;
+        return node;
     }
     
     // Wyrażenie jako instrukcja
@@ -1406,7 +1605,12 @@ const char *keywords[] = {
     "to",
     "zlam",
     "pomin",
-    "dla"};
+    "dla",
+    "nic",
+    "sprobuj",
+    "zlap",
+    "rzuc",
+    "podaj"};
 const int keywords_count = sizeof(keywords) / sizeof(keywords[0]);
 
 int is_keyword(const char *text)
@@ -1474,6 +1678,13 @@ void lex(const char *src)
             else if (strcmp(buf, "publiczna") == 0) add_token(TOKEN_PUBLIC, buf);
             else if (strcmp(buf, "nowy") == 0) add_token(TOKEN_NEW, buf);
             else if (strcmp(buf, "to") == 0) add_token(TOKEN_THIS, buf);
+            else if (strcmp(buf, "nic") == 0) add_token(TOKEN_NULL, buf);
+            else if (strcmp(buf, "sprobuj") == 0) add_token(TOKEN_TRY, buf);
+            else if (strcmp(buf, "zlap") == 0) add_token(TOKEN_CATCH, buf);
+            else if (strcmp(buf, "rzuc") == 0) add_token(TOKEN_THROW, buf);
+            else if (strcmp(buf, "wybor") == 0) add_token(TOKEN_SWITCH, buf);
+            else if (strcmp(buf, "przypadek") == 0) add_token(TOKEN_CASE, buf);
+            else if (strcmp(buf, "domyslnie") == 0) add_token(TOKEN_DEFAULT, buf);
             else if (is_keyword(buf))
             {
                 if (strcmp(buf, "prawda") == 0) add_token(TOKEN_TRUE, buf);
@@ -1634,9 +1845,101 @@ double eval(Node *n)
 {
     if (!n) return 0;
     // printf("DEBUG: eval type %d flags R%d B%d C%d\n", n->type, is_returning, is_breaking, is_continuing);
-    if (is_returning || is_breaking || is_continuing) return 0;
+    if (is_returning || is_breaking || is_continuing || is_exception) return 0;
 
-    if (n->type == NODE_CLASS_DEF) {
+    if (n->type == NODE_TRY) {
+        eval(n->try_catch.try_body);
+        if (is_exception) {
+            is_exception = 0; // Caught
+            if (n->try_catch.catch_body) {
+                Env *prev_env = current_env;
+                current_env = create_env(current_env);
+                
+                if (n->try_catch.catch_var) {
+                    Variable *var = env_define(current_env, n->try_catch.catch_var);
+                    if (exception_string) {
+                        var->type = TYPE_STRING;
+                        strncpy(var->value.stringValue, exception_string, 63);
+                        free(exception_string); exception_string = NULL;
+                    } else {
+                        var->type = TYPE_DOUBLE;
+                        var->value.doubleValue = exception_value;
+                    }
+                } else {
+                    if (exception_string) { free(exception_string); exception_string = NULL; }
+                }
+                
+                eval(n->try_catch.catch_body);
+                
+                Env *temp = current_env;
+                current_env = prev_env;
+                free_env(temp);
+            } else {
+                if (exception_string) { free(exception_string); exception_string = NULL; }
+            }
+        }
+        return 0;
+    }
+    else if (n->type == NODE_THROW) {
+        double val = eval(n->expr);
+        is_exception = 1;
+        if (n->expr->string_value) {
+            exception_string = strdup(n->expr->string_value);
+        } else {
+            exception_value = val;
+        }
+        return 0;
+    }
+    else if (n->type == NODE_NULL) {
+        return 0; // Just return 0, but type handling elsewhere might need update
+    }
+    else if (n->type == NODE_SWITCH) {
+        double target_val = eval(n->switch_stmt.expr);
+        char *target_str = NULL;
+        if (n->switch_stmt.expr->string_value) {
+            target_str = strdup(n->switch_stmt.expr->string_value);
+        }
+        
+        int matched = 0;
+        for (int i = 0; i < n->switch_stmt.case_count; i++) {
+            Node *case_node = n->switch_stmt.cases[i];
+            if (!matched) {
+                double case_val = eval(case_node->case_stmt.value);
+                char *case_str = NULL;
+                if (case_node->case_stmt.value->string_value) {
+                    case_str = case_node->case_stmt.value->string_value;
+                }
+                
+                if (target_str && case_str) {
+                    if (strcmp(target_str, case_str) == 0) matched = 1;
+                } else if (!target_str && !case_str) {
+                    if (target_val == case_val) matched = 1;
+                }
+            }
+            
+            if (matched) {
+                eval(case_node->case_stmt.body);
+                if (is_breaking) {
+                    is_breaking = 0;
+                    if (target_str) free(target_str);
+                    return 0;
+                }
+                if (is_returning || is_exception) {
+                    if (target_str) free(target_str);
+                    return 0;
+                }
+            }
+        }
+        
+        if (!matched && n->switch_stmt.default_case) {
+            eval(n->switch_stmt.default_case);
+            if (is_breaking) is_breaking = 0;
+        }
+        
+        if (target_str) free(target_str);
+        return 0;
+    }
+    else if (n->type == NODE_CLASS_DEF) {
         Class *cls = malloc(sizeof(Class));
         cls->name = strdup(n->class_def.name);
         cls->parent = n->class_def.parent ? strdup(n->class_def.parent) : NULL;
@@ -2068,6 +2371,8 @@ double eval(Node *n)
             } else if (str_val) {
                 var->type = TYPE_STRING;
                 strncpy(var->value.stringValue, str_val, 63);
+            } else if (n->expr->type == NODE_NULL) {
+                var->type = TYPE_NULL;
             } else if (is_bool) {
                 var->type = TYPE_BOOL;
                 var->value.intValue = (val != 0);
@@ -2125,6 +2430,8 @@ double eval(Node *n)
             } else if (str_val) {
                 var->type = TYPE_STRING;
                 strncpy(var->value.stringValue, str_val, 63);
+            } else if (n->expr->type == NODE_NULL) {
+                var->type = TYPE_NULL;
             } else if (is_bool) {
                 var->type = TYPE_BOOL;
                 var->value.intValue = (val != 0);
@@ -2181,6 +2488,9 @@ double eval(Node *n)
                 else printf("%g", d->entries[i].value.value.doubleValue);
             }
             printf("}\n");
+        }
+        else if (n->expr->type == NODE_NULL || (n->expr->type == NODE_VARIABLE && get_variable(n->expr->var_name) && get_variable(n->expr->var_name)->type == TYPE_NULL)) {
+            printf("nic\n");
         }
         else if (n->expr->string_value) {
             printf("%s\n", n->expr->string_value);
@@ -2324,6 +2634,7 @@ double eval(Node *n)
         // Reset control flow flags that shouldn't leak out of function
         if (is_breaking) { is_breaking = 0; }
         if (is_continuing) { is_continuing = 0; }
+        // Exception should propagate out of function call
         
         // Restore environment
         Env *temp = current_env;
@@ -2366,13 +2677,14 @@ double eval(Node *n)
             buffer[strcspn(buffer, "\n")] = 0;
             char *endptr;
             double val = strtod(buffer, &endptr);
+            
+            Variable *var = env_define(current_env, n->var_name);
             if (*endptr == '\0') {
-                return val;
+                var->type = TYPE_DOUBLE;
+                var->value.doubleValue = val;
             } else {
-                n->type = NODE_STRING;
-                n->string_value = malloc(strlen(buffer) + 1);
-                strcpy(n->string_value, buffer);
-                return 0;
+                var->type = TYPE_STRING;
+                strncpy(var->value.stringValue, buffer, 63);
             }
         }
         return 0;
