@@ -46,7 +46,9 @@ typedef enum
     NODE_THROW,
     NODE_SWITCH,
     NODE_CASE,
-    NODE_DEFAULT
+    NODE_DEFAULT,
+    NODE_FOR,
+    NODE_FOREACH
 } NodeType;
 
 // Forward declaration
@@ -157,6 +159,21 @@ typedef struct Node
         struct Node *value;
         struct Node *body;
     } case_stmt;
+
+    // Dla FOR
+    struct {
+        struct Node *init;
+        struct Node *cond;
+        struct Node *inc;
+        struct Node *body;
+    } for_loop;
+
+    // Dla FOREACH
+    struct {
+        char *var_name;
+        struct Node *collection;
+        struct Node *body;
+    } foreach_loop;
 } Node;
 typedef enum
 {
@@ -214,6 +231,8 @@ typedef enum
     TOKEN_SWITCH,
     TOKEN_CASE,
     TOKEN_DEFAULT,
+    TOKEN_FOR,
+    TOKEN_IN,
     TOKEN_EOF       // koniec pliku
 } TokenType;
 
@@ -718,8 +737,118 @@ Node *parse_expr_bp(int min_bp)
     }
     else if (tokens[pos].type == TOKEN_STRING)
     {
-        left = make_string(tokens[pos].text);
+        char *str = tokens[pos].text;
         pos++;
+        
+        // Check for interpolation ${...}
+        char *start = str;
+        char *p = str;
+        Node *current_node = NULL;
+        
+        while (*p) {
+            if (*p == '$' && *(p+1) == '{') {
+                // Found start of interpolation
+                // Create string node for text before ${
+                int len = p - start;
+                if (len > 0) {
+                    char *part = malloc(len + 1);
+                    strncpy(part, start, len);
+                    part[len] = 0;
+                    Node *str_node = make_string(part);
+                    free(part);
+                    
+                    if (current_node) {
+                        current_node = make_op(TOKEN_PLUS, current_node, str_node);
+                    } else {
+                        current_node = str_node;
+                    }
+                }
+                
+                // Parse expression inside ${...}
+                p += 2; // skip ${
+                char *expr_start = p;
+                int brace_depth = 1;
+                while (*p && brace_depth > 0) {
+                    if (*p == '{') brace_depth++;
+                    else if (*p == '}') brace_depth--;
+                    if (brace_depth > 0) p++;
+                }
+                
+                if (brace_depth == 0) {
+                    // Found matching }
+                    int expr_len = p - expr_start;
+                    char *expr_text = malloc(expr_len + 1);
+                    strncpy(expr_text, expr_start, expr_len);
+                    expr_text[expr_len] = 0;
+                    
+                    // Save global state
+                    Token *saved_tokens = tokens;
+                    int saved_count = token_count;
+                    int saved_pos = pos;
+                    int saved_capacity = token_capacity;
+                    
+                    // Reset global state for inner parsing
+                    tokens = NULL;
+                    token_count = 0;
+                    token_capacity = 0;
+                    
+                    // Lex and parse inner expression
+                    // We need to declare lex() prototype or move it up
+                    void lex(const char *src);
+                    lex(expr_text);
+                    
+                    int inner_pos = 0;
+                    // Temporarily swap pos/tokens to use parse_expr_bp
+                    Token *inner_tokens = tokens;
+                    int inner_count = token_count;
+                    
+                    // tokens is already set by lex() because lex() uses the global 'tokens' variable
+                    // But wait, lex() reallocs 'tokens'.
+                    // So when we called lex(expr_text), it modified the global 'tokens'.
+                    // We need to be careful.
+                    // The lex() function uses global 'tokens', 'token_count', 'token_capacity'.
+                    // We saved them before calling lex().
+                    // So now 'tokens' points to the NEW tokens from inner lexing.
+                    
+                    // We need to set pos = 0 for the inner parse.
+                    pos = 0; 
+                    
+                    Node *expr_node = parse_expr_bp(0);
+                    
+                    // Restore global state
+                    free(tokens); // Free inner tokens
+                    tokens = saved_tokens;
+                    token_count = saved_count;
+                    token_capacity = saved_capacity;
+                    pos = saved_pos;
+                    
+                    free(expr_text);
+                    
+                    if (current_node) {
+                        current_node = make_op(TOKEN_PLUS, current_node, expr_node);
+                    } else {
+                        current_node = expr_node;
+                    }
+                    
+                    start = p + 1; // Next part starts after }
+                } else {
+                    printf("Błąd: brak zamykającego '}' w interpolacji\n");
+                }
+            }
+            p++;
+        }
+        
+        // Add remaining string part
+        if (start < p) {
+            Node *str_node = make_string(start);
+            if (current_node) {
+                current_node = make_op(TOKEN_PLUS, current_node, str_node);
+            } else {
+                current_node = str_node;
+            }
+        }
+        
+        left = current_node;
     }
     else if (tokens[pos].type == TOKEN_TRUE)
     {
@@ -1434,6 +1563,162 @@ Node *parse_stmt()
         if (tokens[pos].type == TOKEN_RBRACE) pos++;
         return node;
     }
+
+    if (tokens[pos].type == TOKEN_FOR) {
+        pos++;
+        if (tokens[pos].type != TOKEN_LPAREN) {
+            printf("Błąd: oczekiwano '('\n");
+            return NULL;
+        }
+        pos++;
+        
+        // Check for foreach: dla (ident w ...)
+        if (tokens[pos].type == TOKEN_IDENT && tokens[pos+1].type == TOKEN_IN) {
+            char *var_name = strdup(tokens[pos].text);
+            pos += 2; // skip ident and 'w'
+            
+            Node *collection = parse_expr_bp(0);
+            
+            if (tokens[pos].type != TOKEN_RPAREN) {
+                printf("Błąd: oczekiwano ')'\n");
+                return NULL;
+            }
+            pos++;
+            
+            Node *body = parse_stmt();
+            
+            Node *node = calloc(1, sizeof(Node));
+            node->type = NODE_FOREACH;
+            node->foreach_loop.var_name = var_name;
+            node->foreach_loop.collection = collection;
+            node->foreach_loop.body = body;
+            return node;
+        } else {
+            // Classic for: dla (init; cond; inc)
+            Node *init = NULL;
+            if (tokens[pos].type != TOKEN_SEMICOLON) {
+                init = parse_stmt(); 
+                // parse_stmt consumes semicolon for VAR_DECL and ASSIGN
+                // But if parse_stmt returns NULL (e.g. empty statement?), we might be stuck.
+                // Also, parse_stmt might NOT consume semicolon if it's just an expression?
+                // parse_stmt handles expression statements by calling parse_expr_bp then checking for semicolon.
+                // So init should be fully parsed including semicolon.
+            } else {
+                pos++; // empty init
+            }
+            
+            Node *cond = NULL;
+            if (tokens[pos].type != TOKEN_SEMICOLON) {
+                cond = parse_expr_bp(0);
+            }
+            if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+            
+            Node *inc = NULL;
+            if (tokens[pos].type != TOKEN_RPAREN) {
+                // inc is usually an expression, not a statement (no semicolon)
+                // But we can reuse parse_stmt logic if we want assignment?
+                // Actually inc is usually `i++` or `i = i + 1`.
+                // `i++` is parsed as assignment statement in parse_stmt?
+                // No, `i++` is an expression in some languages, statement in others.
+                // In mylang, `i++` is a token TOKEN_INC.
+                // parse_expr_bp handles `i++`? No, parse_stmt handles `i++` desugaring.
+                // So inc should be parsed as a statement but WITHOUT consuming semicolon?
+                // Or parsed as expression?
+                // If `i++` is only in parse_stmt, we can't use parse_expr_bp for it.
+                // Let's try to parse it as statement but handle the missing semicolon.
+                
+                // Hack: parse_stmt expects semicolon.
+                // We can peek and see if it's an assignment or inc/dec.
+                // If so, parse it manually here?
+                // Or modify parse_stmt to be more flexible?
+                // Let's parse it as expression if possible.
+                // But `i = i + 1` is assignment, which is a statement in mylang (NODE_ASSIGN).
+                // NODE_ASSIGN is not an expression in mylang (it returns 0 in eval).
+                // So we need to parse a statement-like thing for inc.
+                
+                // Let's try to parse it as a statement.
+                // But parse_stmt expects semicolon.
+                // We can temporarily insert a semicolon token? No.
+                // We can parse_stmt and check if it failed?
+                
+                // Let's duplicate the assignment logic from parse_stmt here for `inc`.
+                if (tokens[pos].type == TOKEN_IDENT && 
+                    (tokens[pos+1].type == TOKEN_ASSIGN || 
+                     tokens[pos+1].type == TOKEN_PLUS_ASSIGN || 
+                     tokens[pos+1].type == TOKEN_MINUS_ASSIGN ||
+                     tokens[pos+1].type == TOKEN_MUL_ASSIGN ||
+                     tokens[pos+1].type == TOKEN_DIV_ASSIGN ||
+                     tokens[pos+1].type == TOKEN_MOD_ASSIGN ||
+                     tokens[pos+1].type == TOKEN_INC ||
+                     tokens[pos+1].type == TOKEN_DEC)) {
+                         
+                    // It's an assignment or inc/dec
+                    // We can call parse_stmt, but it will complain about missing semicolon.
+                    // Let's just copy the logic but without semicolon check.
+                    
+                    if (tokens[pos+1].type == TOKEN_ASSIGN) {
+                        char *var_name = tokens[pos].text;
+                        pos += 2;
+                        Node *expr = parse_expr_bp(0);
+                        Node *node = calloc(1, sizeof(Node));
+                        node->type = NODE_ASSIGN;
+                        node->var_name = strdup(var_name);
+                        node->expr = expr;
+                        inc = node;
+                    } else if (tokens[pos+1].type == TOKEN_INC || tokens[pos+1].type == TOKEN_DEC) {
+                        char *var_name = tokens[pos].text;
+                        int op_type = tokens[pos+1].type;
+                        pos += 2;
+                        Node *var_node = calloc(1, sizeof(Node));
+                        var_node->type = NODE_VARIABLE;
+                        var_node->var_name = strdup(var_name);
+                        Node *one = make_number(1);
+                        int bin_op = (op_type == TOKEN_INC) ? TOKEN_PLUS : TOKEN_MINUS;
+                        Node *op_node = make_op(bin_op, var_node, one);
+                        Node *node = calloc(1, sizeof(Node));
+                        node->type = NODE_ASSIGN;
+                        node->var_name = strdup(var_name);
+                        node->expr = op_node;
+                        inc = node;
+                    } else {
+                        // Compound assignment
+                        char *var_name = tokens[pos].text;
+                        int op_type = tokens[pos+1].type;
+                        pos += 2;
+                        Node *expr = parse_expr_bp(0);
+                        Node *var_node = calloc(1, sizeof(Node));
+                        var_node->type = NODE_VARIABLE;
+                        var_node->var_name = strdup(var_name);
+                        int bin_op = 0;
+                        if (op_type == TOKEN_PLUS_ASSIGN) bin_op = TOKEN_PLUS;
+                        else if (op_type == TOKEN_MINUS_ASSIGN) bin_op = TOKEN_MINUS;
+                        else if (op_type == TOKEN_MUL_ASSIGN) bin_op = TOKEN_STAR;
+                        else if (op_type == TOKEN_DIV_ASSIGN) bin_op = TOKEN_SLASH;
+                        else if (op_type == TOKEN_MOD_ASSIGN) bin_op = TOKEN_MOD;
+                        Node *op_node = make_op(bin_op, var_node, expr);
+                        Node *node = calloc(1, sizeof(Node));
+                        node->type = NODE_ASSIGN;
+                        node->var_name = strdup(var_name);
+                        node->expr = op_node;
+                        inc = node;
+                    }
+                } else {
+                    inc = parse_expr_bp(0);
+                }
+            }
+            if (tokens[pos].type == TOKEN_RPAREN) pos++;
+            
+            Node *body = parse_stmt();
+            
+            Node *node = calloc(1, sizeof(Node));
+            node->type = NODE_FOR;
+            node->for_loop.init = init;
+            node->for_loop.cond = cond;
+            node->for_loop.inc = inc;
+            node->for_loop.body = body;
+            return node;
+        }
+    }
     
     // Wyrażenie jako instrukcja
     // Sprawdź czy to przypisanie: ident = expr LUB ident[idx] = expr
@@ -1585,10 +1870,13 @@ const char *keywords[] = {
     "jezeli",
     "inaczej",
     "dla",
+    "w",
     "funkcja",
     "zwroc",
     "zmienna",
     "wkolko",
+    "zlam",
+    "pomin",
     "prawda",
     "falsz",
     "oraz",
@@ -1603,19 +1891,20 @@ const char *keywords[] = {
     "publiczna",
     "nowy",
     "to",
-    "zlam",
-    "pomin",
-    "dla",
     "nic",
     "sprobuj",
     "zlap",
     "rzuc",
-    "podaj"};
+    "wybor",
+    "przypadek",
+    "domyslnie",
+    NULL
+};
 const int keywords_count = sizeof(keywords) / sizeof(keywords[0]);
 
 int is_keyword(const char *text)
 {
-    for (int i = 0; i < keywords_count; i++)
+    for (int i = 0; keywords[i] != NULL; i++)
     {
         if (strcmp(text, keywords[i]) == 0)
             return 1;
@@ -1645,18 +1934,19 @@ void lex(const char *src)
             continue;
         }
 
-        if (src[i] == '"')
-        {        // string w cudzysłowie
+        if (src[i] == '"' || src[i] == '\'')
+        {        // string w cudzysłowie (pojedynczym lub podwójnym)
+            char quote = src[i];
             i++; // pomiń otwierający cudzysłów
             int start = i;
-            while (src[i] != '"' && src[i] != '\0')
+            while (src[i] != quote && src[i] != '\0')
                 i++;
             int len = i - start;
             char buf[1024];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
             add_token(TOKEN_STRING, buf);
-            if (src[i] == '"')
+            if (src[i] == quote)
                 i++; // pomiń zamykający cudzysłów
             continue;
         }
@@ -1685,6 +1975,8 @@ void lex(const char *src)
             else if (strcmp(buf, "wybor") == 0) add_token(TOKEN_SWITCH, buf);
             else if (strcmp(buf, "przypadek") == 0) add_token(TOKEN_CASE, buf);
             else if (strcmp(buf, "domyslnie") == 0) add_token(TOKEN_DEFAULT, buf);
+            else if (strcmp(buf, "dla") == 0) add_token(TOKEN_FOR, buf);
+            else if (strcmp(buf, "w") == 0) add_token(TOKEN_IN, buf);
             else if (is_keyword(buf))
             {
                 if (strcmp(buf, "prawda") == 0) add_token(TOKEN_TRUE, buf);
@@ -1840,6 +2132,16 @@ void lex(const char *src)
     // printf("DEBUG: Lex end\n");
     // fflush(stdout);
 }
+
+char *get_node_string(Node *n) {
+    if (!n) return NULL;
+    if (n->string_value) return n->string_value;
+    if (n->type == NODE_VARIABLE) {
+        Variable *v = get_variable(n->var_name);
+        if (v && v->type == TYPE_STRING) return v->value.stringValue;
+    }
+    return NULL;
+}
  
 double eval(Node *n)
 {
@@ -1847,7 +2149,124 @@ double eval(Node *n)
     // printf("DEBUG: eval type %d flags R%d B%d C%d\n", n->type, is_returning, is_breaking, is_continuing);
     if (is_returning || is_breaking || is_continuing || is_exception) return 0;
 
-    if (n->type == NODE_TRY) {
+    else if (n->type == NODE_FOR) {
+        Env *prev_env = current_env;
+        current_env = create_env(current_env); // New scope for loop vars
+        
+        if (n->for_loop.init) eval(n->for_loop.init);
+        
+        while (1) {
+            if (n->for_loop.cond) {
+                double c = eval(n->for_loop.cond);
+                if (c == 0) break;
+            }
+            
+            eval(n->for_loop.body);
+            
+            if (is_breaking) {
+                is_breaking = 0;
+                break;
+            }
+            if (is_continuing) {
+                is_continuing = 0;
+            }
+            
+            if (n->for_loop.inc) eval(n->for_loop.inc);
+            
+            if (is_returning || is_exception) break;
+        }
+        
+        Env *temp = current_env;
+        current_env = prev_env;
+        free_env(temp);
+        return 0;
+    }
+    else if (n->type == NODE_FOREACH) {
+        Node *col_node = n->foreach_loop.collection;
+        eval(col_node);
+        
+        Array *arr = NULL;
+        Dict *dict = NULL;
+        char *str = NULL;
+        
+        if (col_node->array_value) arr = col_node->array_value;
+        else if (col_node->dict_value) dict = col_node->dict_value;
+        else if (col_node->string_value) str = col_node->string_value;
+        else if (col_node->type == NODE_VARIABLE) {
+            Variable *v = get_variable(col_node->var_name);
+            if (v) {
+                if (v->type == TYPE_ARRAY) arr = v->value.arrayValue;
+                else if (v->type == TYPE_DICT) dict = v->value.dictValue;
+                else if (v->type == TYPE_STRING) str = v->value.stringValue;
+            }
+        }
+        
+        if (!arr && !dict && !str) {
+            printf("Błąd: pętla 'dla' wymaga tablicy, słownika lub napisu\n");
+            return 0;
+        }
+        
+        Env *prev_env = current_env;
+        current_env = create_env(current_env);
+        
+        if (arr) {
+            for (int i=0; i<arr->count; i++) {
+                Variable *var = env_define(current_env, n->foreach_loop.var_name);
+                // Copy value to var
+                if (arr->elements[i].type == 0) {
+                    var->type = TYPE_DOUBLE;
+                    var->value.doubleValue = arr->elements[i].value.doubleValue;
+                } else if (arr->elements[i].type == 1) {
+                    var->type = TYPE_STRING;
+                    strncpy(var->value.stringValue, arr->elements[i].value.stringValue, 63);
+                } else if (arr->elements[i].type == 2) {
+                    var->type = TYPE_ARRAY;
+                    var->value.arrayValue = arr->elements[i].value.arrayValue;
+                } else if (arr->elements[i].type == 4) {
+                    var->type = TYPE_DICT;
+                    var->value.dictValue = arr->elements[i].value.dictValue;
+                }
+                
+                eval(n->foreach_loop.body);
+                
+                if (is_breaking) { is_breaking = 0; break; }
+                if (is_continuing) { is_continuing = 0; }
+                if (is_returning || is_exception) break;
+            }
+        } else if (dict) {
+            for (int i=0; i<dict->count; i++) {
+                Variable *var = env_define(current_env, n->foreach_loop.var_name);
+                var->type = TYPE_STRING;
+                strncpy(var->value.stringValue, dict->entries[i].key, 63);
+                
+                eval(n->foreach_loop.body);
+                
+                if (is_breaking) { is_breaking = 0; break; }
+                if (is_continuing) { is_continuing = 0; }
+                if (is_returning || is_exception) break;
+            }
+        } else if (str) {
+            char buf[2] = {0};
+            for (int i=0; str[i]; i++) {
+                Variable *var = env_define(current_env, n->foreach_loop.var_name);
+                var->type = TYPE_STRING;
+                buf[0] = str[i];
+                strncpy(var->value.stringValue, buf, 63);
+                
+                eval(n->foreach_loop.body);
+                
+                if (is_breaking) { is_breaking = 0; break; }
+                if (is_continuing) { is_continuing = 0; }
+                if (is_returning || is_exception) break;
+            }
+        }
+        
+        Env *temp = current_env;
+        current_env = prev_env;
+        free_env(temp);
+        return 0;
+    }
+    else if (n->type == NODE_TRY) {
         eval(n->try_catch.try_body);
         if (is_exception) {
             is_exception = 0; // Caught
@@ -2137,9 +2556,9 @@ double eval(Node *n)
             
             if (dict) {
                 eval(n->array_op.index);
-                char *key = NULL;
-                if (n->array_op.index->string_value) {
-                    key = n->array_op.index->string_value;
+                char *key = get_node_string(n->array_op.index);
+                if (key) {
+                    // key is valid
                 } else {
                     printf("Błąd: klucz słownika musi być napisem\n");
                     return 0;
@@ -2147,18 +2566,26 @@ double eval(Node *n)
                 
                 ArrayElement *el = dict_get(dict, key);
                 if (el) {
-                    if (el->type == 0) return el->value.doubleValue;
+                    if (el->type == 0) {
+                        if (n->string_value) { free(n->string_value); n->string_value = NULL; }
+                        return el->value.doubleValue;
+                    }
                     if (el->type == 1) {
                         if (n->string_value) free(n->string_value);
                         n->string_value = strdup(el->value.stringValue);
                         return 0;
                     }
                     if (el->type == 2) {
+                        if (n->string_value) { free(n->string_value); n->string_value = NULL; }
                         n->array_value = el->value.arrayValue;
                         return 0;
                     }
-                    if (el->type == 3) return el->value.intValue;
+                    if (el->type == 3) {
+                        if (n->string_value) { free(n->string_value); n->string_value = NULL; }
+                        return el->value.intValue;
+                    }
                     if (el->type == 4) {
+                        if (n->string_value) { free(n->string_value); n->string_value = NULL; }
                         n->dict_value = el->value.dictValue;
                         return 0;
                     }
@@ -2173,17 +2600,22 @@ double eval(Node *n)
                     printf("Błąd: indeks %d poza zakresem (rozmiar %d)\n", idx, arr->count);
                     return 0;
                 }
-                if (arr->elements[idx].type == 0) return arr->elements[idx].value.doubleValue;
+                if (arr->elements[idx].type == 0) {
+                    if (n->string_value) { free(n->string_value); n->string_value = NULL; }
+                    return arr->elements[idx].value.doubleValue;
+                }
                 if (arr->elements[idx].type == 1) {
                     if (n->string_value) free(n->string_value);
                     n->string_value = strdup(arr->elements[idx].value.stringValue);
                     return 0;
                 }
                 if (arr->elements[idx].type == 2) {
+                    if (n->string_value) { free(n->string_value); n->string_value = NULL; }
                     n->array_value = arr->elements[idx].value.arrayValue;
                     return 0;
                 }
                 if (arr->elements[idx].type == 4) {
+                    if (n->string_value) { free(n->string_value); n->string_value = NULL; }
                     n->dict_value = arr->elements[idx].value.dictValue;
                     return 0;
                 }
@@ -2696,20 +3128,21 @@ double eval(Node *n)
 
         if (n->op.op_type == TOKEN_PLUS)
         {
-            if (n->op.a->string_value || n->op.b->string_value)
+            char *sA = get_node_string(n->op.a);
+            char *sB = get_node_string(n->op.b);
+
+            if (sA || sB)
             {
                 char bufA[64], bufB[64];
-                const char *strA = n->op.a->string_value;
-                const char *strB = n->op.b->string_value;
                 
-                if (!strA) { snprintf(bufA, 64, "%g", a); strA = bufA; }
-                if (!strB) { snprintf(bufB, 64, "%g", b); strB = bufB; }
+                if (!sA) { snprintf(bufA, 64, "%g", a); sA = bufA; }
+                if (!sB) { snprintf(bufB, 64, "%g", b); sB = bufB; }
                 
                 // n->type = NODE_STRING; // DO NOT MUTATE AST TYPE
                 if (n->string_value) free(n->string_value);
-                n->string_value = malloc(strlen(strA) + strlen(strB) + 1);
-                strcpy(n->string_value, strA);
-                strcat(n->string_value, strB);
+                n->string_value = malloc(strlen(sA) + strlen(sB) + 1);
+                strcpy(n->string_value, sA);
+                strcat(n->string_value, sB);
                 return 0;
             }
         }
@@ -3345,12 +3778,17 @@ void parse()
     }
 }
 
+// Forward declaration for interpolation
+void lex(const char *src);
+
 int main(int argc, char *argv[])
 {
     // printf("DEBUG: Main start\n");
     // fflush(stdout);
     if (argc < 2)
     {
+        printf("Uzycie: mylang <plik>\n");
+        return 1;
     }
     FILE *file = fopen(argv[1], "rb");
     if (!file)
@@ -3388,44 +3826,15 @@ int main(int argc, char *argv[])
     // }
 
     parse();
+    
+    // Print global variables only if not returning from main (which shouldn't happen)
+    // Actually, let's comment this out to avoid cluttering output of scripts
+    /*
     for (int i = 0; i < global_env->var_count; i++)
     {
         printf("Zmienna %s = ", global_env->variables[i].name);
-        if (global_env->variables[i].type == TYPE_INT)
-            printf("%d\n", global_env->variables[i].value.intValue);
-        else if (global_env->variables[i].type == TYPE_DOUBLE)
-            printf("%lf\n", global_env->variables[i].value.doubleValue);
-        else if (global_env->variables[i].type == TYPE_STRING)
-            printf("'%s'\n", global_env->variables[i].value.stringValue);
-        else if (global_env->variables[i].type == TYPE_BOOL)
-            printf("%s\n", global_env->variables[i].value.intValue ? "prawda" : "falsz");
-        else if (global_env->variables[i].type == TYPE_DICT) {
-            printf("{");
-            Dict *d = global_env->variables[i].value.dictValue;
-            for (int j=0; j<d->count; j++) {
-                if (j > 0) printf(", ");
-                printf("\"%s\": ", d->entries[j].key);
-                if (d->entries[j].value.type == 1) printf("\"%s\"", d->entries[j].value.value.stringValue);
-                else if (d->entries[j].value.type == 2) printf("[...]");
-                else if (d->entries[j].value.type == 4) printf("{...}");
-                else printf("%g", d->entries[j].value.value.doubleValue);
-            }
-            printf("}\n");
-        }
-        else if (global_env->variables[i].type == TYPE_ARRAY) {
-            printf("[");
-            Array *arr = global_env->variables[i].value.arrayValue;
-            for (int j=0; j<arr->count; j++) {
-                if (j > 0) printf(", ");
-                if (arr->elements[j].type == 1) printf("\"%s\"", arr->elements[j].value.stringValue);
-                else if (arr->elements[j].type == 2) printf("[...]");
-                else if (arr->elements[j].type == 4) printf("{...}");
-                else printf("%g", arr->elements[j].value.doubleValue);
-            }
-            printf("]\n");
-        }
-        else
-            printf("Nieznany typ\n");
+        // ...
     }
+    */
     return 0;
 }

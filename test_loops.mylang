@@ -1,0 +1,30 @@
+// Test loops and interpolation
+
+pisz "--- Test petli dla (klasyczna) ---";
+dla (zmienna i = 0; i < 3; i++) {
+    pisz "i = " + i;
+}
+
+pisz "--- Test petli dla (foreach tablica) ---";
+zmienna tab = ["a", "b", "c"];
+dla (el w tab) {
+    pisz "Element: " + el;
+}
+
+pisz "--- Test petli dla (foreach slownik) ---";
+zmienna osoba = {"imie": "Jan", "wiek": 30};
+dla (klucz w osoba) {
+    pisz "Klucz: " + klucz + ", Wartosc: " + osoba[klucz];
+}
+
+pisz "--- Test petli dla (foreach napis) ---";
+dla (znak w "abc") {
+    pisz "Znak: " + znak;
+}
+
+pisz "--- Test interpolacji ---";
+zmienna imie = "Kasia";
+zmienna wiek = 25;
+pisz "Witaj ${imie}, masz ${wiek} lat.";
+pisz "Za rok bedziesz miec ${wiek + 1} lat.";
+pisz "Zagniezdzone: ${ 'A' + 'B' }";
