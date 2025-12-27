@@ -1,0 +1,25 @@
+pisz "--- TEST 4: Funkcje i Zwracanie Zlozonych Typow (GC) ---";
+
+funkcja stworzTablice(x) {
+    zmienna t = [];
+    t.dodaj(x);
+    t.dodaj(x * 2);
+    zwroc t;
+}
+
+zmienna tab = stworzTablice(10);
+pisz "Tablica z funkcji [10, 20]:";
+pisz tab[0];
+pisz tab[1];
+
+funkcja stworzSlownik(klucz, wartosc) {
+    zmienna s = {};
+    s[klucz] = wartosc;
+    s["info"] = "test";
+    zwroc s;
+}
+
+zmienna slownik = stworzSlownik("wiek", 99);
+pisz "Slownik z funkcji:";
+pisz "wiek: " + slownik["wiek"];
+pisz "info: " + slownik["info"];

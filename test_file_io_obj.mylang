@@ -1,9 +1,0 @@
-Plik.zapisz("test_io_obj.txt", "Hello Object World!");
-zmienna content = Plik.czytaj("test_io_obj.txt");
-pisz "Read content:";
-pisz content;
-
-Plik.dopisz("test_io_obj.txt", " Appended text.");
-content = Plik.czytaj("test_io_obj.txt");
-pisz "Read content after append:";
-pisz content;

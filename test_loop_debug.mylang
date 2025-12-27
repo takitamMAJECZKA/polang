@@ -1,0 +1,13 @@
+zmienna i = 0;
+wkolko (i < 10) {
+    i = i + 1;
+    jezeli (i == 3) {
+        pisz "Pominiecie 3";
+        pomin;
+    }
+    jezeli (i > 5) {
+        pisz "Zlamanie petli przy " + i;
+        zlam;
+    }
+    pisz "Petla i = " + i;
+}

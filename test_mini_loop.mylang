@@ -1,0 +1,5 @@
+zmienna i = 0;
+wkolko (i < 3) {
+    i = i + 1;
+    pisz i;
+}

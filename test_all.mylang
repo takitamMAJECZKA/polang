@@ -1,0 +1,74 @@
+pisz "--- TEST 1: Podstawy i Matematyka ---";
+zmienna a = 10;
+zmienna b = 20;
+pisz "a + b = " + (a + b);
+pisz "pi = " + pi;
+zmienna mod = 10 % 3;
+pisz "10 % 3 = " + mod;
+zmienna c = 5;
+c++;
+pisz "c++ (5->6) = " + c;
+c += 4;
+pisz "c += 4 (6->10) = " + c;
+c %= 3;
+pisz "c %= 3 (10->1) = " + c;
+
+pisz "";
+pisz "--- TEST 2: Metody Stringow ---";
+zmienna tekst = "Hello World";
+pisz "Oryginal: " + tekst;
+pisz "wGore: " + tekst.wGore();
+pisz "wDol: " + tekst.wDol();
+pisz "wytnij(0, 5): " + tekst.wytnij(0, 5);
+zmienna csv = "a,b,c";
+zmienna czesci = csv.podziel(",");
+pisz "podziel('a,b,c', ','):";
+pisz czesci[0];
+pisz czesci[1];
+pisz czesci[2];
+
+pisz "";
+pisz "--- TEST 3: Petle i Sterowanie (zlam/pomin) ---";
+zmienna i = 0;
+wkolko (i < 10) {
+    i = i + 1;
+    jezeli (i == 3) {
+        pisz "Pominiecie 3";
+        pomin;
+    }
+    jezeli (i > 5) {
+        pisz "Zlamanie petli przy " + i;
+        zlam;
+    }
+    pisz "Petla i = " + i;
+}
+
+pisz "";
+pisz "--- TEST 4: Funkcje i Zwracanie Zlozonych Typow (GC) ---";
+
+funkcja stworzTablice(x) {
+    zmienna t = [];
+    t.dodaj(x);
+    t.dodaj(x * 2);
+    zwroc t;
+}
+
+zmienna tab = stworzTablice(10);
+pisz "Tablica z funkcji [10, 20]:";
+pisz tab[0];
+pisz tab[1];
+
+funkcja stworzSlownik(klucz, wartosc) {
+    zmienna s = {};
+    s[klucz] = wartosc;
+    s["info"] = "test";
+    zwroc s;
+}
+
+zmienna slownik = stworzSlownik("wiek", 99);
+pisz "Slownik z funkcji:";
+pisz "wiek: " + slownik["wiek"];
+pisz "info: " + slownik["info"];
+
+pisz "";
+pisz "--- KONIEC TESTOW ---";

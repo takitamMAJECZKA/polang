@@ -1,9 +1,14 @@
+#define _USE_MATH_DEFINES
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // ... existing code ...
 
@@ -29,7 +34,9 @@ typedef enum
     NODE_METHOD_CALL,
     NODE_BOOL,
     NODE_DICT_LITERAL,
-    NODE_VAR_DECL
+    NODE_VAR_DECL,
+    NODE_BREAK,
+    NODE_CONTINUE
 } NodeType;
 
 // Forward declaration
@@ -142,6 +149,10 @@ typedef enum
     TOKEN_MINUS_ASSIGN, // -=
     TOKEN_MUL_ASSIGN, // *=
     TOKEN_DIV_ASSIGN, // /=
+    TOKEN_MOD,        // %
+    TOKEN_MOD_ASSIGN, // %=
+    TOKEN_BREAK,
+    TOKEN_CONTINUE,
     TOKEN_EOF       // koniec pliku
 } TokenType;
 
@@ -151,11 +162,9 @@ typedef struct
     char text[64];
 } Token;
 
-#define MAX_TOKENS 256
-Token tokens[MAX_TOKENS];
+Token *tokens = NULL;
 int token_count = 0;
-
-#define MAX_VARS 32
+int token_capacity = 0;
 
 typedef enum
 {
@@ -182,6 +191,7 @@ typedef struct Array {
     ArrayElement *elements;
     int count;
     int capacity;
+    int ref_count; // Reference counting
 } Array;
 
 typedef struct {
@@ -193,6 +203,7 @@ typedef struct Dict {
     DictEntry *entries;
     int count;
     int capacity;
+    int ref_count; // Reference counting
 } Dict;
 
 typedef struct
@@ -210,8 +221,9 @@ typedef struct
 } Variable;
 
 typedef struct Env {
-    Variable variables[MAX_VARS];
+    Variable *variables;
     int var_count;
+    int var_capacity;
     struct Env *parent;
 } Env;
 
@@ -222,6 +234,8 @@ Env *create_env(Env *parent) {
     Env *env = calloc(1, sizeof(Env));
     env->parent = parent;
     env->var_count = 0;
+    env->var_capacity = 8;
+    env->variables = malloc(sizeof(Variable) * env->var_capacity);
     return env;
 }
 
@@ -238,21 +252,20 @@ Variable *env_get(Env *env, const char *name) {
 
 Variable *env_define(Env *env, const char *name) {
     if (!env || !name) return NULL;
-    // Check if already defined in CURRENT scope (shadowing allowed, redefinition in same scope maybe not?)
-    // Let's allow redefinition for simplicity or check?
-    // Usually redefinition in same scope is error or update.
-    // Let's check if exists in current scope.
     for (int i = 0; i < env->var_count; i++) {
         if (strcmp(env->variables[i].name, name) == 0) {
             return &env->variables[i]; // Return existing to update
         }
     }
-    if (env->var_count >= MAX_VARS) {
-        printf("Błąd: zbyt wiele zmiennych w zasięgu\n");
-        return NULL;
+    if (env->var_count >= env->var_capacity) {
+        env->var_capacity *= 2;
+        env->variables = realloc(env->variables, sizeof(Variable) * env->var_capacity);
     }
     Variable *var = &env->variables[env->var_count++];
     strncpy(var->name, name, 63);
+    // Initialize to safe defaults
+    var->type = TYPE_DOUBLE;
+    var->value.doubleValue = 0;
     return var;
 }
 
@@ -263,8 +276,9 @@ typedef struct {
     int arg_count;
 } Function;
 
-Function functions[32];
+Function *functions = NULL;
 int func_count = 0;
+int func_capacity = 0;
 
 Function *get_function(const char *name) {
     for (int i=0; i<func_count; i++) {
@@ -273,13 +287,55 @@ Function *get_function(const char *name) {
     return NULL;
 }
 
+// Memory Management Helpers
+void free_array(Array *arr);
+void free_dict(Dict *d);
+
+void incref_array(Array *arr) {
+    if (arr) arr->ref_count++;
+}
+
+void decref_array(Array *arr) {
+    if (arr) {
+        arr->ref_count--;
+        if (arr->ref_count <= 0) free_array(arr);
+    }
+}
+
+void incref_dict(Dict *d) {
+    if (d) d->ref_count++;
+}
+
+void decref_dict(Dict *d) {
+    if (d) {
+        d->ref_count--;
+        if (d->ref_count <= 0) free_dict(d);
+    }
+}
+
 // Array helpers
 Array *create_array() {
     Array *arr = malloc(sizeof(Array));
     arr->count = 0;
     arr->capacity = 8;
+    arr->ref_count = 1; // Start with 1 ref
     arr->elements = malloc(sizeof(ArrayElement) * arr->capacity);
     return arr;
+}
+
+void free_array(Array *arr) {
+    if (!arr) return;
+    for (int i=0; i<arr->count; i++) {
+        if (arr->elements[i].type == 1 && arr->elements[i].value.stringValue) {
+            free(arr->elements[i].value.stringValue);
+        } else if (arr->elements[i].type == 2) {
+            decref_array(arr->elements[i].value.arrayValue);
+        } else if (arr->elements[i].type == 4) {
+            decref_dict(arr->elements[i].value.dictValue);
+        }
+    }
+    free(arr->elements);
+    free(arr);
 }
 
 void array_push(Array *arr, double val, char *str, Array *subArr, Dict *subDict) {
@@ -294,9 +350,11 @@ void array_push(Array *arr, double val, char *str, Array *subArr, Dict *subDict)
     } else if (subArr) {
         arr->elements[arr->count].type = 2;
         arr->elements[arr->count].value.arrayValue = subArr;
+        incref_array(subArr);
     } else if (subDict) {
         arr->elements[arr->count].type = 4;
         arr->elements[arr->count].value.dictValue = subDict;
+        incref_dict(subDict);
     } else {
         arr->elements[arr->count].type = 0;
         arr->elements[arr->count].value.doubleValue = val;
@@ -312,6 +370,10 @@ void array_set(Array *arr, int index, double val, char *str) {
     // Free old string if exists
     if (arr->elements[index].type == 1 && arr->elements[index].value.stringValue) {
         free(arr->elements[index].value.stringValue);
+    } else if (arr->elements[index].type == 2) {
+        decref_array(arr->elements[index].value.arrayValue);
+    } else if (arr->elements[index].type == 4) {
+        decref_dict(arr->elements[index].value.dictValue);
     }
     
     if (str) {
@@ -329,8 +391,25 @@ Dict *create_dict() {
     Dict *d = malloc(sizeof(Dict));
     d->count = 0;
     d->capacity = 8;
+    d->ref_count = 1;
     d->entries = malloc(sizeof(DictEntry) * d->capacity);
     return d;
+}
+
+void free_dict(Dict *d) {
+    if (!d) return;
+    for (int i=0; i<d->count; i++) {
+        if (d->entries[i].key) free(d->entries[i].key);
+        if (d->entries[i].value.type == 1 && d->entries[i].value.value.stringValue) {
+            free(d->entries[i].value.value.stringValue);
+        } else if (d->entries[i].value.type == 2) {
+            decref_array(d->entries[i].value.value.arrayValue);
+        } else if (d->entries[i].value.type == 4) {
+            decref_dict(d->entries[i].value.value.dictValue);
+        }
+    }
+    free(d->entries);
+    free(d);
 }
 
 void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict *subDict) {
@@ -340,16 +419,23 @@ void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict 
             // Update
             if (d->entries[i].value.type == 1 && d->entries[i].value.value.stringValue) {
                 free(d->entries[i].value.value.stringValue);
+            } else if (d->entries[i].value.type == 2) {
+                decref_array(d->entries[i].value.value.arrayValue);
+            } else if (d->entries[i].value.type == 4) {
+                decref_dict(d->entries[i].value.value.dictValue);
             }
+            
             if (str) {
                 d->entries[i].value.type = 1;
                 d->entries[i].value.value.stringValue = strdup(str);
             } else if (arr) {
                 d->entries[i].value.type = 2;
                 d->entries[i].value.value.arrayValue = arr;
+                incref_array(arr);
             } else if (subDict) {
                 d->entries[i].value.type = 4;
                 d->entries[i].value.value.dictValue = subDict;
+                incref_dict(subDict);
             } else {
                 d->entries[i].value.type = 0;
                 d->entries[i].value.value.doubleValue = val;
@@ -370,9 +456,11 @@ void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict 
     } else if (arr) {
         d->entries[d->count].value.type = 2;
         d->entries[d->count].value.value.arrayValue = arr;
+        incref_array(arr);
     } else if (subDict) {
         d->entries[d->count].value.type = 4;
         d->entries[d->count].value.value.dictValue = subDict;
+        incref_dict(subDict);
     } else {
         d->entries[d->count].value.type = 0;
         d->entries[d->count].value.value.doubleValue = val;
@@ -401,7 +489,24 @@ void free_node(Node *n);
 // Global return value register
 double return_value = 0;
 char *return_string = NULL;
-int is_returning = 0;
+volatile int is_returning = 0;
+volatile int is_breaking = 0;
+volatile int is_continuing = 0;
+Array *return_array = NULL;
+Dict *return_dict = NULL;
+
+void free_env(Env *env) {
+    if (!env) return;
+    for (int i=0; i<env->var_count; i++) {
+        if (env->variables[i].type == TYPE_ARRAY && env->variables[i].value.arrayValue) {
+            decref_array(env->variables[i].value.arrayValue);
+        } else if (env->variables[i].type == TYPE_DICT && env->variables[i].value.dictValue) {
+            decref_dict(env->variables[i].value.dictValue);
+        }
+    }
+    if (env->variables) free(env->variables);
+    free(env);
+}
 
 Node *make_number(double value)
 {
@@ -451,7 +556,7 @@ int pos = 0;
 int get_binding_power(Token t)
 {
     if (t.type == TOKEN_DOT) return 100;
-    if (t.type == TOKEN_STAR || t.type == TOKEN_SLASH) return 20;
+    if (t.type == TOKEN_STAR || t.type == TOKEN_SLASH || t.type == TOKEN_MOD) return 20;
     if (t.type == TOKEN_PLUS || t.type == TOKEN_MINUS) return 10;
     if (t.type == TOKEN_LT || t.type == TOKEN_GT || t.type == TOKEN_LTE || t.type == TOKEN_GTE) return 4;
     if (t.type == TOKEN_EQ || t.type == TOKEN_NEQ) return 3;
@@ -742,8 +847,25 @@ Node *parse_block() {
 Node *parse_stmt()
 {
     // printf("DEBUG: parse_stmt token=%s type=%d\n", tokens[pos].text, tokens[pos].type);
+    // fflush(stdout);
     if (tokens[pos].type == TOKEN_LBRACE) {
         return parse_block();
+    }
+
+    if (tokens[pos].type == TOKEN_BREAK) {
+        pos++;
+        if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_BREAK;
+        return node;
+    }
+
+    if (tokens[pos].type == TOKEN_CONTINUE) {
+        pos++;
+        if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_CONTINUE;
+        return node;
     }
     
     if (tokens[pos].type == TOKEN_KEYWORD)
@@ -915,6 +1037,22 @@ Node *parse_stmt()
                 return node;
             }
         }
+        else if (strcmp(tokens[pos].text, "zlam") == 0)
+        {
+            pos++;
+            if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+            Node *node = calloc(1, sizeof(Node));
+            node->type = NODE_BREAK;
+            return node;
+        }
+        else if (strcmp(tokens[pos].text, "pomin") == 0)
+        {
+            pos++;
+            if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+            Node *node = calloc(1, sizeof(Node));
+            node->type = NODE_CONTINUE;
+            return node;
+        }
     }
     
     // Wyrażenie jako instrukcja
@@ -935,7 +1073,8 @@ Node *parse_stmt()
             return node;
         }
         else if (tokens[pos+1].type == TOKEN_PLUS_ASSIGN || tokens[pos+1].type == TOKEN_MINUS_ASSIGN ||
-                 tokens[pos+1].type == TOKEN_MUL_ASSIGN || tokens[pos+1].type == TOKEN_DIV_ASSIGN) {
+                 tokens[pos+1].type == TOKEN_MUL_ASSIGN || tokens[pos+1].type == TOKEN_DIV_ASSIGN ||
+                 tokens[pos+1].type == TOKEN_MOD_ASSIGN) {
             char *var_name = tokens[pos].text;
             int op_type = tokens[pos+1].type;
             pos += 2;
@@ -952,6 +1091,7 @@ Node *parse_stmt()
             else if (op_type == TOKEN_MINUS_ASSIGN) bin_op = TOKEN_MINUS;
             else if (op_type == TOKEN_MUL_ASSIGN) bin_op = TOKEN_STAR;
             else if (op_type == TOKEN_DIV_ASSIGN) bin_op = TOKEN_SLASH;
+            else if (op_type == TOKEN_MOD_ASSIGN) bin_op = TOKEN_MOD;
             
             Node *op_node = make_op(bin_op, var_node, expr);
             
@@ -1017,13 +1157,15 @@ Node *parse_stmt()
 
 void add_token(TokenType type, const char *text)
 {
-    if (token_count < MAX_TOKENS)
+    if (token_count >= token_capacity)
     {
-        tokens[token_count].type = type;
-        strncpy(tokens[token_count].text, text, 63);
-        tokens[token_count].text[63] = '\0';
-        token_count++;
+        token_capacity = (token_capacity == 0) ? 256 : token_capacity * 2;
+        tokens = realloc(tokens, sizeof(Token) * token_capacity);
     }
+    tokens[token_count].type = type;
+    strncpy(tokens[token_count].text, text, 63);
+    tokens[token_count].text[63] = '\0';
+    token_count++;
 }
 
 // Tablica słów kluczowych
@@ -1044,6 +1186,8 @@ const char *keywords[] = {
     "albo",
     "rowne",
     "nierowne",
+    "zlam",
+    "pomin",
     "dla"};
 const int keywords_count = sizeof(keywords) / sizeof(keywords[0]);
 
@@ -1063,6 +1207,8 @@ int is_ident_char(char c) {
 
 void lex(const char *src)
 {
+    // printf("DEBUG: Lex start\n");
+    // fflush(stdout);
     int i = 0;
     while (src[i] != '\0')
     {
@@ -1084,7 +1230,7 @@ void lex(const char *src)
             while (src[i] != '"' && src[i] != '\0')
                 i++;
             int len = i - start;
-            char buf[64];
+            char buf[1024];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
             add_token(TOKEN_STRING, buf);
@@ -1108,6 +1254,8 @@ void lex(const char *src)
                 else if (strcmp(buf, "falsz") == 0) add_token(TOKEN_FALSE, buf);
                 else if (strcmp(buf, "oraz") == 0) add_token(TOKEN_AND, buf);
                 else if (strcmp(buf, "albo") == 0) add_token(TOKEN_OR, buf);
+                else if (strcmp(buf, "zlam") == 0) add_token(TOKEN_BREAK, buf);
+                else if (strcmp(buf, "pomin") == 0) add_token(TOKEN_CONTINUE, buf);
                 else if (strcmp(buf, "rowne") == 0) add_token(TOKEN_EQ, buf);
                 else if (strcmp(buf, "nierowne") == 0) add_token(TOKEN_NEQ, buf);
                 else add_token(TOKEN_KEYWORD, buf);
@@ -1145,7 +1293,7 @@ void lex(const char *src)
         if (c == '=' || c == '+' || c == '-' || c == '*' || c == '/' ||
             c == '(' || c == ')' || c == ';' || c == '{' || c == '}' || c == ',' ||
             c == '<' || c == '>' || c == '!' || c == '&' || c == '|' ||
-            c == '[' || c == ']' || c == '.' || c == ':')
+            c == '[' || c == ']' || c == '.' || c == ':' || c == '%')
         {
             switch (c)
             {
@@ -1192,6 +1340,10 @@ void lex(const char *src)
             case '*':
                 if (src[i+1] == '=') { add_token(TOKEN_MUL_ASSIGN, "*="); i++; }
                 else { add_token(TOKEN_STAR, "*"); }
+                break;
+            case '%':
+                if (src[i+1] == '=') { add_token(TOKEN_MOD_ASSIGN, "%="); i++; }
+                else { add_token(TOKEN_MOD, "%"); }
                 break;
             case '/':
                 if (src[i+1] == '/') {
@@ -1248,21 +1400,24 @@ void lex(const char *src)
         i++;
     }
     add_token(TOKEN_EOF, "EOF");
+    // printf("DEBUG: Lex end\n");
+    // fflush(stdout);
 }
-
+ 
 double eval(Node *n)
 {
     if (!n) return 0;
-    if (is_returning) return 0;
+    // printf("DEBUG: eval type %d flags R%d B%d C%d\n", n->type, is_returning, is_breaking, is_continuing);
+    if (is_returning || is_breaking || is_continuing) return 0;
 
     if (n->type == NODE_BLOCK) {
         current_env = create_env(current_env); // Push scope
         for (int i=0; i<n->block.count; i++) {
             eval(n->block.stmts[i]);
-            if (is_returning) break;
+            if (is_returning || is_breaking || is_continuing) break;
         }
         Env *parent = current_env->parent;
-        free(current_env); // Simple free, ideally free vars too
+        free_env(current_env); // cleanup vars
         current_env = parent; // Pop scope
         return 0;
     }
@@ -1425,6 +1580,7 @@ double eval(Node *n)
     }
     else if (n->type == NODE_ASSIGN) {
         double val = eval(n->expr);
+        // printf("DEBUG: Assign %s = %f\n", n->var_name, val);
         char *str_val = NULL;
         Array *arr_val = NULL;
         Dict *dict_val = NULL;
@@ -1439,9 +1595,9 @@ double eval(Node *n)
              }
         }
         
-        if (n->expr->type == NODE_ARRAY_LITERAL) {
+        if (n->expr->type == NODE_ARRAY_LITERAL || n->expr->array_value) {
             arr_val = n->expr->array_value;
-        } else if (n->expr->type == NODE_DICT_LITERAL) {
+        } else if (n->expr->type == NODE_DICT_LITERAL || n->expr->dict_value) {
             dict_val = n->expr->dict_value;
         } else if (n->expr->string_value) {
             str_val = n->expr->string_value;
@@ -1449,12 +1605,19 @@ double eval(Node *n)
         
         Variable *var = get_variable(n->var_name);
         if (var) {
+            // printf("DEBUG: Found var %s at %p (val=%f)\n", n->var_name, var, var->value.doubleValue);
+            // Cleanup old value
+            if (var->type == TYPE_ARRAY) decref_array(var->value.arrayValue);
+            if (var->type == TYPE_DICT) decref_dict(var->value.dictValue);
+            
             if (arr_val) {
                 var->type = TYPE_ARRAY;
                 var->value.arrayValue = arr_val;
+                incref_array(arr_val);
             } else if (dict_val) {
                 var->type = TYPE_DICT;
                 var->value.dictValue = dict_val;
+                incref_dict(dict_val);
             } else if (str_val) {
                 var->type = TYPE_STRING;
                 strncpy(var->value.stringValue, str_val, 63);
@@ -1485,9 +1648,9 @@ double eval(Node *n)
              }
         }
         
-        if (n->expr->type == NODE_ARRAY_LITERAL) {
+        if (n->expr->type == NODE_ARRAY_LITERAL || n->expr->array_value) {
             arr_val = n->expr->array_value;
-        } else if (n->expr->type == NODE_DICT_LITERAL) {
+        } else if (n->expr->type == NODE_DICT_LITERAL || n->expr->dict_value) {
             dict_val = n->expr->dict_value;
         } else if (n->expr->string_value) {
             str_val = n->expr->string_value;
@@ -1498,9 +1661,11 @@ double eval(Node *n)
             if (arr_val) {
                 var->type = TYPE_ARRAY;
                 var->value.arrayValue = arr_val;
+                incref_array(arr_val);
             } else if (dict_val) {
                 var->type = TYPE_DICT;
                 var->value.dictValue = dict_val;
+                incref_dict(dict_val);
             } else if (str_val) {
                 var->type = TYPE_STRING;
                 strncpy(var->value.stringValue, str_val, 63);
@@ -1515,6 +1680,7 @@ double eval(Node *n)
         return 0;
     }
     else if (n->type == NODE_PRINT) {
+        // printf("DEBUG: NODE_PRINT\n");
         double val = eval(n->expr);
         
         // Check if expression is boolean
@@ -1579,55 +1745,99 @@ double eval(Node *n)
         return 0;
     }
     else if (n->type == NODE_WHILE) {
-        while (eval(n->flow.cond) != 0) {
+        while (1) {
+            // printf("DEBUG: Before cond, is_breaking=%d\n", is_breaking);
+            // fflush(stdout);
+            double c = eval(n->flow.cond);
+            // printf("DEBUG: While cond: %e\n", c);
+            // fflush(stdout);
+            if (c == 0 || is_breaking) {
+                // printf("DEBUG: Breaking loop c=%e B=%d\n", c, is_breaking);
+                // fflush(stdout);
+                if (is_breaking) is_breaking = 0;
+                break;
+            }
+
+            if (is_breaking) {
+                is_breaking = 0;
+                break;
+            }
+            // if (is_continuing) {
+            //     is_continuing = 0;
+            //     continue;
+            // }
             eval(n->flow.body);
             if (is_returning) break;
+            if (is_continuing) {
+                is_continuing = 0;
+                continue;
+            }
         }
+        // printf("DEBUG: NODE_WHILE returning\n");
+        // fflush(stdout);
         return 0;
     }
     else if (n->type == NODE_FUNC_DEF) {
-        if (func_count < 32) {
-            Function f;
-            strncpy(f.name, n->func.name, 63);
-            f.body = n->func.body;
-            f.args = n->func.args;
-            f.arg_count = n->func.arg_count;
-            functions[func_count++] = f;
+        if (func_count >= func_capacity) {
+            func_capacity = (func_capacity == 0) ? 32 : func_capacity * 2;
+            functions = realloc(functions, sizeof(Function) * func_capacity);
         }
+        Function f;
+        strncpy(f.name, n->func.name, 63);
+        f.body = n->func.body;
+        f.args = n->func.args;
+        f.arg_count = n->func.arg_count;
+        functions[func_count++] = f;
         return 0;
     }
     else if (n->type == NODE_RETURN) {
         if (n->expr) {
             return_value = eval(n->expr);
+            
+            // Clear previous return objects
+            if (return_string) { free(return_string); return_string = NULL; }
+            if (return_array) { decref_array(return_array); return_array = NULL; }
+            if (return_dict) { decref_dict(return_dict); return_dict = NULL; }
+
             if (n->expr->string_value) {
-                if (return_string) free(return_string);
                 return_string = malloc(strlen(n->expr->string_value)+1);
                 strcpy(return_string, n->expr->string_value);
-            } else {
-                if (return_string) { free(return_string); return_string = NULL; }
+            } else if (n->expr->array_value) {
+                return_array = n->expr->array_value;
+                incref_array(return_array);
+            } else if (n->expr->dict_value) {
+                return_dict = n->expr->dict_value;
+                incref_dict(return_dict);
             }
         }
         is_returning = 1;
         return return_value;
     }
     else if (n->type == NODE_FUNC_CALL) {
+        // printf("DEBUG: Calling function %s\n", n->call.name);
         Function *f = get_function(n->call.name);
         if (!f) { printf("Błąd: nieznana funkcja %s\n", n->call.name); return 0; }
         
         double arg_vals[16];
         char *arg_strs[16] = {0};
+        Array *arg_arrs[16] = {0};
+        Dict *arg_dicts[16] = {0};
         
         for (int i=0; i<n->call.arg_count; i++) {
             arg_vals[i] = eval(n->call.args[i]);
             if (n->call.args[i]->string_value) {
                 arg_strs[i] = malloc(strlen(n->call.args[i]->string_value)+1);
                 strcpy(arg_strs[i], n->call.args[i]->string_value);
+            } else if (n->call.args[i]->array_value) {
+                arg_arrs[i] = n->call.args[i]->array_value;
+                incref_array(arg_arrs[i]);
+            } else if (n->call.args[i]->dict_value) {
+                arg_dicts[i] = n->call.args[i]->dict_value;
+                incref_dict(arg_dicts[i]);
             }
         }
         
         // Create new environment for function call
-        // Parent is global_env (static scoping for top-level functions)
-        // If we supported nested functions, we'd need closure env.
         Env *prev_env = current_env;
         current_env = create_env(global_env);
         
@@ -1639,6 +1849,12 @@ double eval(Node *n)
                 if (arg_strs[i]) {
                     var->type = TYPE_STRING;
                     strncpy(var->value.stringValue, arg_strs[i], 63);
+                } else if (arg_arrs[i]) {
+                    var->type = TYPE_ARRAY;
+                    var->value.arrayValue = arg_arrs[i];
+                } else if (arg_dicts[i]) {
+                    var->type = TYPE_DICT;
+                    var->value.dictValue = arg_dicts[i];
                 } else {
                     var->type = TYPE_DOUBLE;
                     var->value.doubleValue = arg_vals[i];
@@ -1649,25 +1865,36 @@ double eval(Node *n)
         
         eval(f->body);
         
+        // Reset control flow flags that shouldn't leak out of function
+        if (is_breaking) { is_breaking = 0; }
+        if (is_continuing) { is_continuing = 0; }
+        
         // Restore environment
         Env *temp = current_env;
         current_env = prev_env;
-        free(temp); // Should free vars inside too
+        free_env(temp);
 
-        
         double ret = return_value;
+        
+        // Clear node values
+        if (n->string_value) { free(n->string_value); n->string_value = NULL; }
+        n->array_value = NULL;
+        n->dict_value = NULL;
+
         if (return_string) {
-            // n->type = NODE_STRING; // NIE ZMIENIAJ TYPU!
-            if (n->string_value) free(n->string_value);
             n->string_value = malloc(strlen(return_string)+1);
             strcpy(n->string_value, return_string);
-        } else {
-            if (n->string_value) { free(n->string_value); n->string_value = NULL; }
+            free(return_string); return_string = NULL;
+        } else if (return_array) {
+            n->array_value = return_array;
+            return_array = NULL; 
+        } else if (return_dict) {
+            n->dict_value = return_dict;
+            return_dict = NULL;
         }
         
         is_returning = 0;
         return_value = 0;
-        if (return_string) { free(return_string); return_string = NULL; }
         
         return ret;
     }
@@ -1710,7 +1937,7 @@ double eval(Node *n)
                 if (!strA) { snprintf(bufA, 64, "%g", a); strA = bufA; }
                 if (!strB) { snprintf(bufB, 64, "%g", b); strB = bufB; }
                 
-                n->type = NODE_STRING;
+                // n->type = NODE_STRING; // DO NOT MUTATE AST TYPE
                 if (n->string_value) free(n->string_value);
                 n->string_value = malloc(strlen(strA) + strlen(strB) + 1);
                 strcpy(n->string_value, strA);
@@ -1733,16 +1960,21 @@ double eval(Node *n)
         // Handle boolean logic explicitly to return 0/1
         if (n->op.op_type == TOKEN_AND) return (a != 0) && (b != 0);
         if (n->op.op_type == TOKEN_OR) return (a != 0) || (b != 0);
-        if (n->op.op_type == TOKEN_EQ) return a == b;
+        if (n->op.op_type == TOKEN_EQ) {
+            return a == b;
+        }
         if (n->op.op_type == TOKEN_NEQ) return a != b;
 
         switch (n->op.op_type)
         {
         case TOKEN_PLUS: return a + b;
         case TOKEN_MINUS: return a - b;
+        case TOKEN_MOD: return b != 0 ? fmod(a, b) : 0;
         case TOKEN_STAR: return a * b;
         case TOKEN_SLASH: return b != 0 ? a / b : 0;
-        case TOKEN_LT: return a < b;
+        case TOKEN_LT:
+            // printf("DEBUG: LT %f < %f = %d\n", a, b, a < b);
+            return a < b;
         case TOKEN_GT: return a > b;
         case TOKEN_LTE: return a <= b;
         case TOKEN_GTE: return a >= b;
@@ -1757,14 +1989,14 @@ double eval(Node *n)
             if (var->type == TYPE_INT) return var->value.intValue;
             if (var->type == TYPE_DOUBLE) return var->value.doubleValue;
             if (var->type == TYPE_STRING) {
-                n->type = NODE_STRING;
+                // n->type = NODE_STRING; // DO NOT MUTATE AST TYPE
                 if (n->string_value) free(n->string_value);
                 n->string_value = malloc(strlen(var->value.stringValue) + 1);
                 strcpy(n->string_value, var->value.stringValue);
                 return 0;
             }
             if (var->type == TYPE_BOOL) {
-                n->type = NODE_BOOL;
+                // n->type = NODE_BOOL; // DO NOT MUTATE AST TYPE
                 return var->value.intValue;
             }
             if (var->type == TYPE_ARRAY) {
@@ -1835,9 +2067,9 @@ double eval(Node *n)
                                 }
                                 fclose(f);
                                 
-                                n->type = NODE_STRING;
-                                if (n->string_value) free(n->string_value);
-                                n->string_value = string;
+                // n->type = NODE_STRING; // DO NOT MUTATE AST TYPE
+                if (n->string_value) free(n->string_value);
+                n->string_value = string;
                                 return 0;
                             } else {
                                 printf("Błąd: nie można otworzyć pliku %s\n", path);
@@ -1885,9 +2117,82 @@ double eval(Node *n)
         if (n->method.obj->type == NODE_VARIABLE) {
             var = get_variable(n->method.obj->var_name);
         }
+
+        // String methods
+        char *str_obj = NULL;
+        if (var && var->type == TYPE_STRING) {
+            str_obj = var->value.stringValue;
+        } else if (n->method.obj->type == NODE_STRING) {
+            str_obj = n->method.obj->string_value;
+        } else if (n->method.obj->string_value) {
+            str_obj = n->method.obj->string_value;
+        }
+
+        if (str_obj) {
+            if (strcmp(n->method.name, "wGore") == 0) {
+                // n->type = NODE_STRING; // DO NOT MUTATE AST TYPE
+                if (n->string_value) free(n->string_value);
+                n->string_value = strdup(str_obj);
+                for (int i = 0; n->string_value[i]; i++) {
+                    n->string_value[i] = toupper((unsigned char)n->string_value[i]);
+                }
+                return 0;
+            }
+            if (strcmp(n->method.name, "wDol") == 0) {
+                // n->type = NODE_STRING; // DO NOT MUTATE AST TYPE
+                if (n->string_value) free(n->string_value);
+                n->string_value = strdup(str_obj);
+                for (int i = 0; n->string_value[i]; i++) {
+                    n->string_value[i] = tolower((unsigned char)n->string_value[i]);
+                }
+                return 0;
+            }
+            if (strcmp(n->method.name, "wytnij") == 0) {
+                if (n->method.arg_count >= 2) {
+                    int start = (int)eval(n->method.args[0]);
+                    int len = (int)eval(n->method.args[1]);
+                    int str_len = strlen(str_obj);
+                    
+                    if (start < 0) start = 0;
+                    if (start > str_len) start = str_len;
+                    if (len < 0) len = 0;
+                    if (start + len > str_len) len = str_len - start;
+                    
+                    // n->type = NODE_STRING; // DO NOT MUTATE AST TYPE
+                    if (n->string_value) free(n->string_value);
+                    n->string_value = malloc(len + 1);
+                    strncpy(n->string_value, str_obj + start, len);
+                    n->string_value[len] = '\0';
+                }
+                return 0;
+            }
+            if (strcmp(n->method.name, "podziel") == 0) {
+                char *delim = " ";
+                if (n->method.arg_count >= 1) {
+                    eval(n->method.args[0]);
+                    if (n->method.args[0]->string_value) {
+                        delim = n->method.args[0]->string_value;
+                    }
+                }
+                
+                Array *arr = create_array();
+                char *temp = strdup(str_obj);
+                char *token = strtok(temp, delim);
+                while (token) {
+                    array_push(arr, 0, token, NULL, NULL);
+                    token = strtok(NULL, delim);
+                }
+                free(temp);
+                
+                // n->type = NODE_ARRAY_LITERAL; // DO NOT MUTATE AST TYPE
+                n->array_value = arr;
+                return 0;
+            }
+        }
         
         if (var && var->type == TYPE_ARRAY) {
             if (strcmp(n->method.name, "dodaj") == 0) {
+                // printf("DEBUG: dodaj called\n");
                 if (n->method.arg_count >= 1) {
                     double val = eval(n->method.args[0]);
                     if (n->method.args[0]->string_value) {
@@ -1988,6 +2293,14 @@ double eval(Node *n)
         }
         return 0;
     }
+    else if (n->type == NODE_BREAK) {
+        is_breaking = 1;
+        return 0;
+    }
+    else if (n->type == NODE_CONTINUE) {
+        is_continuing = 1;
+        return 0;
+    }
     else if (n->type == NODE_STRING)
     {
         return 0;
@@ -2010,6 +2323,7 @@ void parse()
 {
     while (pos < token_count && tokens[pos].type != TOKEN_EOF)
     {
+        // printf("DEBUG: Parsing token %d type %d text %s\n", pos, tokens[pos].type, tokens[pos].text);
         Node *stmt = parse_stmt();
         if (stmt)
         {
@@ -2017,6 +2331,7 @@ void parse()
         }
         else
         {
+            // printf("DEBUG: Parse error at token %d\n", pos);
             pos++;
         }
     }
@@ -2024,28 +2339,40 @@ void parse()
 
 int main(int argc, char *argv[])
 {
+    // printf("DEBUG: Main start\n");
+    // fflush(stdout);
     if (argc < 2)
     {
-        printf("Użycie: %s <plik.mylang>\n", argv[0]);
-        return 1;
     }
-
-    FILE *file = fopen(argv[1], "r");
+    FILE *file = fopen(argv[1], "rb");
     if (!file)
     {
         printf("Nie można otworzyć pliku: %s\n", argv[1]);
         return 1;
     }
+    fseek(file, 0, SEEK_END);
+    long fsize = ftell(file);
+    fseek(file, 0, SEEK_SET);
 
-    char src[1024] = {0};
-    fread(src, 1, sizeof(src) - 1, file);
+    char *src = malloc(fsize + 1);
+    fread(src, 1, fsize, file);
+    src[fsize] = 0;
     fclose(file);
 
     lex(src);
 
-    // Initialize global environment
+    // printf("DEBUG: File size: %ld\n", fsize);
+    // printf("DEBUG: Token count: %d\n", token_count);
+    // fflush(stdout);
     global_env = create_env(NULL);
     current_env = global_env;
+
+    // Define global constants
+    Variable *pi_var = env_define(global_env, "pi");
+    if (pi_var) {
+        pi_var->type = TYPE_DOUBLE;
+        pi_var->value.doubleValue = 3.14159265358979323846;
+    }
 
     // for (int i = 0; i < token_count; i++)
     // {
