@@ -48,7 +48,8 @@ typedef enum
     NODE_CASE,
     NODE_DEFAULT,
     NODE_FOR,
-    NODE_FOREACH
+    NODE_FOREACH,
+    NODE_IMPORT
 } NodeType;
 
 // Forward declaration
@@ -233,6 +234,7 @@ typedef enum
     TOKEN_DEFAULT,
     TOKEN_FOR,
     TOKEN_IN,
+    TOKEN_IMPORT,
     TOKEN_EOF       // koniec pliku
 } TokenType;
 
@@ -257,6 +259,21 @@ typedef enum {
     TYPE_NULL
 } VarType;
 
+// GC Definitions
+typedef enum { OBJ_ARRAY, OBJ_DICT, OBJ_INSTANCE } ObjType;
+
+typedef struct ObjHeader {
+    ObjType type;
+    unsigned char marked;
+    struct ObjHeader *next;
+} ObjHeader;
+
+ObjHeader *gc_objects = NULL;
+int gc_objects_count = 0;
+int gc_threshold = 128;
+
+void gc_collect();
+
 // Forward declarations
 struct Class;
 struct Instance;
@@ -275,10 +292,10 @@ typedef struct {
 } ArrayElement; // Reusing for Dict values too
 
 typedef struct Array {
+    ObjHeader header;
     ArrayElement *elements;
     int count;
     int capacity;
-    int ref_count; // Reference counting
 } Array;
 
 typedef struct {
@@ -287,10 +304,10 @@ typedef struct {
 } DictEntry;
 
 typedef struct Dict {
+    ObjHeader header;
     DictEntry *entries;
     int count;
     int capacity;
-    int ref_count; // Reference counting
 } Dict;
 
 typedef struct
@@ -386,44 +403,33 @@ typedef struct Class {
 } Class;
 
 typedef struct Instance {
+    ObjHeader header;
     Class *cls;
     Dict *fields;
-    int ref_count;
 } Instance;
 
 // Memory Management Helpers
 void free_array(Array *arr);
 void free_dict(Dict *d);
+void free_instance(Instance *inst);
 
-void incref_array(Array *arr) {
-    if (arr) arr->ref_count++;
-}
+// Stub out old ref counting
+void incref_array(Array *arr) {}
+void decref_array(Array *arr) {}
+void incref_dict(Dict *d) {}
+void decref_dict(Dict *d) {}
 
-void decref_array(Array *arr) {
-    if (arr) {
-        arr->ref_count--;
-        if (arr->ref_count <= 0) free_array(arr);
-    }
-}
-
-void incref_dict(Dict *d) {
-    if (d) d->ref_count++;
-}
-
-void decref_dict(Dict *d) {
-    if (d) {
-        d->ref_count--;
-        if (d->ref_count <= 0) free_dict(d);
-    }
-}
+// GC Forward Declarations
+void gc_register(ObjHeader *obj, ObjType type);
+void mark_object(ObjHeader *obj);
 
 // Array helpers
 Array *create_array() {
     Array *arr = malloc(sizeof(Array));
     arr->count = 0;
     arr->capacity = 8;
-    arr->ref_count = 1; // Start with 1 ref
     arr->elements = malloc(sizeof(ArrayElement) * arr->capacity);
+    gc_register((ObjHeader*)arr, OBJ_ARRAY);
     return arr;
 }
 
@@ -432,10 +438,6 @@ void free_array(Array *arr) {
     for (int i=0; i<arr->count; i++) {
         if (arr->elements[i].type == 1 && arr->elements[i].value.stringValue) {
             free(arr->elements[i].value.stringValue);
-        } else if (arr->elements[i].type == 2) {
-            decref_array(arr->elements[i].value.arrayValue);
-        } else if (arr->elements[i].type == 4) {
-            decref_dict(arr->elements[i].value.dictValue);
         }
     }
     free(arr->elements);
@@ -454,15 +456,12 @@ void array_push(Array *arr, double val, char *str, Array *subArr, Dict *subDict,
     } else if (subArr) {
         arr->elements[arr->count].type = 2;
         arr->elements[arr->count].value.arrayValue = subArr;
-        incref_array(subArr);
     } else if (subDict) {
         arr->elements[arr->count].type = 4;
         arr->elements[arr->count].value.dictValue = subDict;
-        incref_dict(subDict);
     } else if (inst) {
         arr->elements[arr->count].type = 6;
         arr->elements[arr->count].value.instanceValue = inst;
-        // incref_instance(inst); // TODO
     } else {
         arr->elements[arr->count].type = 0;
         arr->elements[arr->count].value.doubleValue = val;
@@ -478,10 +477,6 @@ void array_set(Array *arr, int index, double val, char *str) {
     // Free old string if exists
     if (arr->elements[index].type == 1 && arr->elements[index].value.stringValue) {
         free(arr->elements[index].value.stringValue);
-    } else if (arr->elements[index].type == 2) {
-        decref_array(arr->elements[index].value.arrayValue);
-    } else if (arr->elements[index].type == 4) {
-        decref_dict(arr->elements[index].value.dictValue);
     }
     
     if (str) {
@@ -499,8 +494,8 @@ Dict *create_dict() {
     Dict *d = malloc(sizeof(Dict));
     d->count = 0;
     d->capacity = 8;
-    d->ref_count = 1;
     d->entries = malloc(sizeof(DictEntry) * d->capacity);
+    gc_register((ObjHeader*)d, OBJ_DICT);
     return d;
 }
 
@@ -510,14 +505,25 @@ void free_dict(Dict *d) {
         if (d->entries[i].key) free(d->entries[i].key);
         if (d->entries[i].value.type == 1 && d->entries[i].value.value.stringValue) {
             free(d->entries[i].value.value.stringValue);
-        } else if (d->entries[i].value.type == 2) {
-            decref_array(d->entries[i].value.value.arrayValue);
-        } else if (d->entries[i].value.type == 4) {
-            decref_dict(d->entries[i].value.value.dictValue);
         }
     }
     free(d->entries);
     free(d);
+}
+
+void free_instance(Instance *inst) {
+    if (!inst) return;
+    // Fields dict is managed by GC, so we don't free it here explicitly
+    // But wait, if Instance owns the Dict, and Dict is a GC object...
+    // Yes, Dict is a separate GC object.
+    // If Instance is freed, it means it's unreachable.
+    // The Dict it points to might still be reachable if shared?
+    // Unlikely for fields, but possible.
+    // If Dict is only reachable from Instance, it will be freed in next sweep or same sweep?
+    // If Instance is unmarked, it is freed.
+    // The Dict it points to is also unmarked (unless reached from elsewhere).
+    // So it will be freed in the same sweep loop.
+    free(inst);
 }
 
 void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict *subDict, struct Instance *inst) {
@@ -527,10 +533,6 @@ void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict 
             // Update
             if (d->entries[i].value.type == 1 && d->entries[i].value.value.stringValue) {
                 free(d->entries[i].value.value.stringValue);
-            } else if (d->entries[i].value.type == 2) {
-                decref_array(d->entries[i].value.value.arrayValue);
-            } else if (d->entries[i].value.type == 4) {
-                decref_dict(d->entries[i].value.value.dictValue);
             }
             
             if (str) {
@@ -539,11 +541,9 @@ void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict 
             } else if (arr) {
                 d->entries[i].value.type = 2;
                 d->entries[i].value.value.arrayValue = arr;
-                incref_array(arr);
             } else if (subDict) {
                 d->entries[i].value.type = 4;
                 d->entries[i].value.value.dictValue = subDict;
-                incref_dict(subDict);
             } else if (inst) {
                 d->entries[i].value.type = 6;
                 d->entries[i].value.value.instanceValue = inst;
@@ -567,11 +567,9 @@ void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict 
     } else if (arr) {
         d->entries[d->count].value.type = 2;
         d->entries[d->count].value.value.arrayValue = arr;
-        incref_array(arr);
     } else if (subDict) {
         d->entries[d->count].value.type = 4;
         d->entries[d->count].value.value.dictValue = subDict;
-        incref_dict(subDict);
     } else if (inst) {
         d->entries[d->count].value.type = 6;
         d->entries[d->count].value.value.instanceValue = inst;
@@ -598,6 +596,7 @@ Variable *get_variable(const char *name)
 
 // Deklaracje funkcji
 double eval(Node *n);
+void parse();
 void free_node(Node *n);
 
 // Global return value register
@@ -614,15 +613,105 @@ volatile int is_exception = 0;
 double exception_value = 0;
 char *exception_string = NULL;
 
-void free_env(Env *env) {
-    if (!env) return;
-    for (int i=0; i<env->var_count; i++) {
-        if (env->variables[i].type == TYPE_ARRAY && env->variables[i].value.arrayValue) {
-            decref_array(env->variables[i].value.arrayValue);
-        } else if (env->variables[i].type == TYPE_DICT && env->variables[i].value.dictValue) {
-            decref_dict(env->variables[i].value.dictValue);
+// GC Implementation
+void mark_array(Array *arr) {
+    if (arr->header.marked) return;
+    arr->header.marked = 1;
+    for (int i=0; i<arr->count; i++) {
+        if (arr->elements[i].type == 2 && arr->elements[i].value.arrayValue) {
+            mark_object((ObjHeader*)arr->elements[i].value.arrayValue);
+        } else if (arr->elements[i].type == 4 && arr->elements[i].value.dictValue) {
+            mark_object((ObjHeader*)arr->elements[i].value.dictValue);
+        } else if (arr->elements[i].type == 6 && arr->elements[i].value.instanceValue) {
+            mark_object((ObjHeader*)arr->elements[i].value.instanceValue);
         }
     }
+}
+
+void mark_dict(Dict *d) {
+    if (d->header.marked) return;
+    d->header.marked = 1;
+    for (int i=0; i<d->count; i++) {
+        if (d->entries[i].value.type == 2 && d->entries[i].value.value.arrayValue) {
+            mark_object((ObjHeader*)d->entries[i].value.value.arrayValue);
+        } else if (d->entries[i].value.type == 4 && d->entries[i].value.value.dictValue) {
+            mark_object((ObjHeader*)d->entries[i].value.value.dictValue);
+        } else if (d->entries[i].value.type == 6 && d->entries[i].value.value.instanceValue) {
+            mark_object((ObjHeader*)d->entries[i].value.value.instanceValue);
+        }
+    }
+}
+
+void mark_instance(Instance *inst) {
+    if (inst->header.marked) return;
+    inst->header.marked = 1;
+    if (inst->fields) mark_dict(inst->fields);
+}
+
+void mark_object(ObjHeader *obj) {
+    if (!obj || obj->marked) return;
+    if (obj->type == OBJ_ARRAY) mark_array((Array*)obj);
+    else if (obj->type == OBJ_DICT) mark_dict((Dict*)obj);
+    else if (obj->type == OBJ_INSTANCE) mark_instance((Instance*)obj);
+}
+
+void mark_env(Env *env) {
+    if (!env) return;
+    for (int i=0; i<env->var_count; i++) {
+        Variable *v = &env->variables[i];
+        if (v->type == TYPE_ARRAY && v->value.arrayValue) mark_object((ObjHeader*)v->value.arrayValue);
+        else if (v->type == TYPE_DICT && v->value.dictValue) mark_object((ObjHeader*)v->value.dictValue);
+        else if (v->type == TYPE_INSTANCE && v->value.instanceValue) mark_object((ObjHeader*)v->value.instanceValue);
+    }
+    if (env->parent) mark_env(env->parent);
+}
+
+void gc_collect() {
+    // printf("DEBUG: GC Running... Objects: %d\n", gc_objects_count);
+    // Mark roots
+    mark_env(global_env);
+    mark_env(current_env);
+    
+    // Mark globals
+    if (return_array) mark_object((ObjHeader*)return_array);
+    if (return_dict) mark_object((ObjHeader*)return_dict);
+    if (return_instance) mark_object((ObjHeader*)return_instance);
+    
+    // Sweep
+    ObjHeader **obj = &gc_objects;
+    while (*obj) {
+        if (!(*obj)->marked) {
+            ObjHeader *unreached = *obj;
+            *obj = unreached->next;
+            
+            if (unreached->type == OBJ_ARRAY) free_array((Array*)unreached);
+            else if (unreached->type == OBJ_DICT) free_dict((Dict*)unreached);
+            else if (unreached->type == OBJ_INSTANCE) free_instance((Instance*)unreached);
+            
+            gc_objects_count--;
+        } else {
+            (*obj)->marked = 0;
+            obj = &(*obj)->next;
+        }
+    }
+    // printf("DEBUG: GC Done. Objects: %d\n", gc_objects_count);
+}
+
+void gc_register(ObjHeader *obj, ObjType type) {
+    obj->type = type;
+    obj->marked = 0;
+    obj->next = gc_objects;
+    gc_objects = obj;
+    gc_objects_count++;
+    
+    if (gc_objects_count > gc_threshold) {
+        gc_collect();
+    }
+}
+
+void free_env(Env *env) {
+    if (!env) return;
+    // No need to decref, GC handles it
     if (env->variables) free(env->variables);
     free(env);
 }
@@ -1114,6 +1203,22 @@ Node *parse_stmt()
     // fflush(stdout);
     if (tokens[pos].type == TOKEN_LBRACE) {
         return parse_block();
+    }
+
+    if (tokens[pos].type == TOKEN_IMPORT) {
+        pos++;
+        if (tokens[pos].type != TOKEN_STRING) {
+             printf("Błąd: oczekiwano ścieżki do pliku po 'import'\n");
+             return NULL;
+        }
+        char *path = tokens[pos].text;
+        pos++;
+        if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+        
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_IMPORT;
+        node->string_value = strdup(path);
+        return node;
     }
 
     if (tokens[pos].type == TOKEN_BREAK) {
@@ -1898,6 +2003,7 @@ const char *keywords[] = {
     "wybor",
     "przypadek",
     "domyslnie",
+    "import",
     NULL
 };
 const int keywords_count = sizeof(keywords) / sizeof(keywords[0]);
@@ -1977,6 +2083,7 @@ void lex(const char *src)
             else if (strcmp(buf, "domyslnie") == 0) add_token(TOKEN_DEFAULT, buf);
             else if (strcmp(buf, "dla") == 0) add_token(TOKEN_FOR, buf);
             else if (strcmp(buf, "w") == 0) add_token(TOKEN_IN, buf);
+            else if (strcmp(buf, "import") == 0) add_token(TOKEN_IMPORT, buf);
             else if (is_keyword(buf))
             {
                 if (strcmp(buf, "prawda") == 0) add_token(TOKEN_TRUE, buf);
@@ -2393,7 +2500,7 @@ double eval(Node *n)
         Instance *inst = malloc(sizeof(Instance));
         inst->cls = cls;
         inst->fields = create_dict();
-        inst->ref_count = 1;
+        gc_register((ObjHeader*)inst, OBJ_INSTANCE);
         
         // Call constructor
         Function *ctor = NULL;
@@ -3750,6 +3857,50 @@ double eval(Node *n)
     {
         return n->value;
     }
+    else if (n->type == NODE_IMPORT) {
+        char *path = n->string_value;
+        FILE *f = fopen(path, "rb");
+        if (!f) {
+            printf("Błąd: nie można otworzyć pliku importu %s\n", path);
+            return 0;
+        }
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *src = malloc(fsize + 1);
+        fread(src, 1, fsize, f);
+        src[fsize] = 0;
+        fclose(f);
+        
+        // Save state
+        Token *old_tokens = tokens;
+        int old_count = token_count;
+        int old_capacity = token_capacity;
+        int old_pos = pos;
+        
+        // Reset state
+        tokens = NULL;
+        token_count = 0;
+        token_capacity = 0;
+        pos = 0;
+        
+        // We need to declare lex() prototype or move it up
+        void lex(const char *src);
+        lex(src);
+        parse();
+        
+        // Cleanup
+        free(tokens);
+        free(src);
+        
+        // Restore state
+        tokens = old_tokens;
+        token_count = old_count;
+        token_capacity = old_capacity;
+        pos = old_pos;
+        
+        return 0;
+    }
     return 0;
 }
 
@@ -3781,15 +3932,77 @@ void parse()
 // Forward declaration for interpolation
 void lex(const char *src);
 
+void repl() {
+    char line[1024];
+    printf("Benzin REPL v1.0\n");
+    printf("Wpisz 'wyjdz' aby zakonczyc.\n");
+    
+    global_env = create_env(NULL);
+    current_env = global_env;
+    
+    // Define global constants
+    Variable *pi_var = env_define(global_env, "pi");
+    if (pi_var) {
+        pi_var->type = TYPE_DOUBLE;
+        pi_var->value.doubleValue = 3.14159265358979323846;
+    }
+
+    while (1) {
+        printf("> ");
+        if (!fgets(line, sizeof(line), stdin)) break;
+        
+        if (strncmp(line, "wyjdz", 5) == 0) break;
+        
+        // Reset tokens
+        if (tokens) free(tokens);
+        tokens = NULL;
+        token_count = 0;
+        token_capacity = 0;
+        pos = 0;
+        
+        lex(line);
+        
+        while (pos < token_count && tokens[pos].type != TOKEN_EOF) {
+            Node *stmt = parse_stmt();
+            if (stmt) {
+                double val = eval(stmt);
+                // If it's an expression that produces a value, print it
+                if (stmt->type == NODE_NUMBER || stmt->type == NODE_OPERATION || 
+                    stmt->type == NODE_VARIABLE || stmt->type == NODE_FUNC_CALL ||
+                    stmt->type == NODE_STRING || stmt->type == NODE_BOOL ||
+                    stmt->type == NODE_ARRAY_ACCESS || stmt->type == NODE_MEMBER_ACCESS ||
+                    stmt->type == NODE_METHOD_CALL) {
+                    
+                    if (stmt->string_value) printf("%s\n", stmt->string_value);
+                    else if (stmt->array_value) printf("[Array]\n"); // TODO: Print array content
+                    else if (stmt->dict_value) printf("{Dict}\n");   // TODO: Print dict content
+                    else if (stmt->type == NODE_BOOL) printf("%s\n", val ? "prawda" : "falsz");
+                    else printf("%g\n", val);
+                }
+            } else {
+                pos++;
+            }
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     // printf("DEBUG: Main start\n");
     // fflush(stdout);
     if (argc < 2)
     {
-        printf("Uzycie: mylang <plik>\n");
+        repl();
+        return 0;
+    }
+    
+    char *filename = argv[1];
+    char *ext = strrchr(filename, '.');
+    if (!ext || strcmp(ext, ".bzn") != 0) {
+        printf("Błąd: plik musi mieć rozszerzenie .bzn\n");
         return 1;
     }
+
     FILE *file = fopen(argv[1], "rb");
     if (!file)
     {

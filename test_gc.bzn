@@ -1,0 +1,16 @@
+pisz "Start GC test";
+
+funkcja make_garbage() {
+    zmienna a = [1, 2, 3];
+    zmienna d = {"x": 1};
+    // These should be collected
+}
+
+dla (zmienna i = 0; i < 1000; i++) {
+    make_garbage();
+    jezeli (i % 100 == 0) {
+        pisz i;
+    }
+}
+
+pisz "End GC test";

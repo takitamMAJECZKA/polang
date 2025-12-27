@@ -1,8 +1,0 @@
-funkcja kubaCwel(){
-    zwroc {czy: ["tak", "nie"]}
-}
-
-pisz kubaCwel().czy[0]
-
-zmienna x = 2* Matma.PI;
-pisz x;

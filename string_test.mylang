@@ -1,4 +1,0 @@
-zmienna a = "hello";
-zmienna b = "swiat";
-
-zmienna c = a + b;

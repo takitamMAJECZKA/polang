@@ -1,1 +1,0 @@
-Hello Object World! Appended text.
