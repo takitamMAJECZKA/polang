@@ -1,0 +1,25 @@
+klasa Punkt {
+    konstruktor(x, y) {
+        to.x = x;
+        to.y = y;
+    }
+    
+    dodaj(p) {
+        zmienna nowyX = to.x + p.x;
+        zmienna nowyY = to.y + p.y;
+        zwroc nowy Punkt(nowyX, nowyY);
+    }
+    
+    wypisz() {
+        pisz "Punkt(" + to.x + ", " + to.y + ")";
+    }
+}
+
+zmienna p1 = nowy Punkt(10, 20);
+p1.wypisz();
+
+zmienna p2 = nowy Punkt(5, 5);
+p2.wypisz();
+
+zmienna p3 = p1.dodaj(p2);
+p3.wypisz();

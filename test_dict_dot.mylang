@@ -1,0 +1,22 @@
+zmienna osoba = {
+    imie: "Jan",
+    "wiek": 30,
+    adres: {
+        miasto: "Warszawa",
+        ulica: "Marszalkowska"
+    }
+};
+
+pisz "Imie: " + osoba.imie;
+pisz "Wiek: " + osoba.wiek;
+pisz "Miasto: " + osoba.adres.miasto;
+
+osoba.wiek = 31;
+pisz "Nowy wiek: " + osoba.wiek;
+
+osoba.adres.kod = "00-001";
+pisz "Kod: " + osoba.adres.kod;
+
+zmienna pusta = {};
+pusta.nowePole = 123;
+pisz "Nowe pole: " + pusta.nowePole;

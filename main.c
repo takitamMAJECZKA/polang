@@ -36,7 +36,11 @@ typedef enum
     NODE_DICT_LITERAL,
     NODE_VAR_DECL,
     NODE_BREAK,
-    NODE_CONTINUE
+    NODE_CONTINUE,
+    NODE_CLASS_DEF,
+    NODE_NEW,
+    NODE_THIS,
+    NODE_MEMBER_ASSIGN
 } NodeType;
 
 // Forward declaration
@@ -111,6 +115,21 @@ typedef struct Node
         struct Node **args;
         int arg_count;
     } method;
+
+    // Dla CLASS DEF
+    struct {
+        char *name;
+        char *parent;
+        struct Node **methods;
+        int method_count;
+    } class_def;
+
+    // Dla NEW
+    struct {
+        char *class_name;
+        struct Node **args;
+        int arg_count;
+    } new_inst;
 } Node;
 typedef enum
 {
@@ -153,6 +172,14 @@ typedef enum
     TOKEN_MOD_ASSIGN, // %=
     TOKEN_BREAK,
     TOKEN_CONTINUE,
+    TOKEN_CLASS,
+    TOKEN_CONSTRUCTOR,
+    TOKEN_EXTENDS,
+    TOKEN_STATIC,
+    TOKEN_PRIVATE,
+    TOKEN_PUBLIC,
+    TOKEN_NEW,
+    TOKEN_THIS,
     TOKEN_EOF       // koniec pliku
 } TokenType;
 
@@ -165,25 +192,31 @@ typedef struct
 Token *tokens = NULL;
 int token_count = 0;
 int token_capacity = 0;
-
-typedef enum
-{
-    TYPE_INT,
+typedef enum {
     TYPE_DOUBLE,
     TYPE_STRING,
     TYPE_ARRAY,
     TYPE_BOOL,
-    TYPE_DICT
+    TYPE_DICT,
+    TYPE_INT,
+    TYPE_CLASS,
+    TYPE_INSTANCE
 } VarType;
 
+// Forward declarations
+struct Class;
+struct Instance;
+
 typedef struct {
-    int type; // 0=double, 1=string, 2=array, 3=bool, 4=dict
+    int type; // 0=double, 1=string, 2=array, 3=bool, 4=dict, 5=class, 6=instance
     union {
         double doubleValue;
         char *stringValue;
         struct Array *arrayValue;
         struct Dict *dictValue;
         int intValue; // for bool
+        struct Class *classValue;
+        struct Instance *instanceValue;
     } value;
 } ArrayElement; // Reusing for Dict values too
 
@@ -217,6 +250,8 @@ typedef struct
         char stringValue[64];
         Array *arrayValue;
         Dict *dictValue;
+        struct Class *classValue;
+        struct Instance *instanceValue;
     } value;
 } Variable;
 
@@ -229,6 +264,7 @@ typedef struct Env {
 
 Env *global_env = NULL;
 Env *current_env = NULL;
+struct Instance *current_instance = NULL;
 
 Env *create_env(Env *parent) {
     Env *env = calloc(1, sizeof(Env));
@@ -287,6 +323,20 @@ Function *get_function(const char *name) {
     return NULL;
 }
 
+typedef struct Class {
+    char *name;
+    char *parent;
+    Function *methods;
+    int method_count;
+    int method_capacity;
+} Class;
+
+typedef struct Instance {
+    Class *cls;
+    Dict *fields;
+    int ref_count;
+} Instance;
+
 // Memory Management Helpers
 void free_array(Array *arr);
 void free_dict(Dict *d);
@@ -338,7 +388,7 @@ void free_array(Array *arr) {
     free(arr);
 }
 
-void array_push(Array *arr, double val, char *str, Array *subArr, Dict *subDict) {
+void array_push(Array *arr, double val, char *str, Array *subArr, Dict *subDict, struct Instance *inst) {
     if (arr->count >= arr->capacity) {
         arr->capacity *= 2;
         arr->elements = realloc(arr->elements, sizeof(ArrayElement) * arr->capacity);
@@ -355,6 +405,10 @@ void array_push(Array *arr, double val, char *str, Array *subArr, Dict *subDict)
         arr->elements[arr->count].type = 4;
         arr->elements[arr->count].value.dictValue = subDict;
         incref_dict(subDict);
+    } else if (inst) {
+        arr->elements[arr->count].type = 6;
+        arr->elements[arr->count].value.instanceValue = inst;
+        // incref_instance(inst); // TODO
     } else {
         arr->elements[arr->count].type = 0;
         arr->elements[arr->count].value.doubleValue = val;
@@ -412,7 +466,7 @@ void free_dict(Dict *d) {
     free(d);
 }
 
-void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict *subDict) {
+void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict *subDict, struct Instance *inst) {
     // Check if key exists
     for (int i=0; i<d->count; i++) {
         if (strcmp(d->entries[i].key, key) == 0) {
@@ -436,6 +490,9 @@ void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict 
                 d->entries[i].value.type = 4;
                 d->entries[i].value.value.dictValue = subDict;
                 incref_dict(subDict);
+            } else if (inst) {
+                d->entries[i].value.type = 6;
+                d->entries[i].value.value.instanceValue = inst;
             } else {
                 d->entries[i].value.type = 0;
                 d->entries[i].value.value.doubleValue = val;
@@ -461,6 +518,9 @@ void dict_set(Dict *d, const char *key, double val, char *str, Array *arr, Dict 
         d->entries[d->count].value.type = 4;
         d->entries[d->count].value.value.dictValue = subDict;
         incref_dict(subDict);
+    } else if (inst) {
+        d->entries[d->count].value.type = 6;
+        d->entries[d->count].value.value.instanceValue = inst;
     } else {
         d->entries[d->count].value.type = 0;
         d->entries[d->count].value.value.doubleValue = val;
@@ -494,6 +554,8 @@ volatile int is_breaking = 0;
 volatile int is_continuing = 0;
 Array *return_array = NULL;
 Dict *return_dict = NULL;
+struct Class *return_class = NULL;
+struct Instance *return_instance = NULL;
 
 void free_env(Env *env) {
     if (!env) return;
@@ -636,6 +698,43 @@ Node *parse_expr_bp(int min_bp)
         left->type = NODE_BOOL;
         left->value = 0;
         left->string_value = NULL;
+    }
+    else if (tokens[pos].type == TOKEN_NEW)
+    {
+        pos++;
+        if (tokens[pos].type != TOKEN_IDENT) {
+            printf("Błąd: oczekiwano nazwy klasy\n");
+            return NULL;
+        }
+        char *class_name = tokens[pos].text;
+        pos++;
+        
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_NEW;
+        node->new_inst.class_name = strdup(class_name);
+        node->new_inst.args = malloc(sizeof(Node*) * 16);
+        node->new_inst.arg_count = 0;
+        
+        if (tokens[pos].type == TOKEN_LPAREN) {
+            pos++;
+            if (tokens[pos].type != TOKEN_RPAREN) {
+                while (1) {
+                    node->new_inst.args[node->new_inst.arg_count++] = parse_expr_bp(0);
+                    if (tokens[pos].type == TOKEN_COMMA) pos++;
+                    else break;
+                }
+            }
+            if (tokens[pos].type == TOKEN_RPAREN) pos++;
+        }
+        
+        left = node;
+    }
+    else if (tokens[pos].type == TOKEN_THIS)
+    {
+        pos++;
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_THIS;
+        left = node;
     }
     else if (tokens[pos].type == TOKEN_KEYWORD && strcmp(tokens[pos].text, "podaj") == 0)
     {
@@ -868,6 +967,87 @@ Node *parse_stmt()
         return node;
     }
     
+    if (tokens[pos].type == TOKEN_CLASS)
+    {
+        pos++;
+        if (tokens[pos].type != TOKEN_IDENT) {
+            printf("Błąd: oczekiwano nazwy klasy\n");
+            return NULL;
+        }
+        char *name = tokens[pos].text;
+        pos++;
+        
+        char *parent = NULL;
+        if (tokens[pos].type == TOKEN_EXTENDS) {
+            pos++;
+            if (tokens[pos].type != TOKEN_IDENT) {
+                printf("Błąd: oczekiwano nazwy klasy bazowej\n");
+                return NULL;
+            }
+            parent = tokens[pos].text;
+            pos++;
+        }
+        
+        if (tokens[pos].type != TOKEN_LBRACE) {
+            printf("Błąd: oczekiwano '{'\n");
+            return NULL;
+        }
+        pos++;
+        
+        Node *node = calloc(1, sizeof(Node));
+        node->type = NODE_CLASS_DEF;
+        node->class_def.name = strdup(name);
+        if (parent) node->class_def.parent = strdup(parent);
+        node->class_def.methods = malloc(sizeof(Node*) * 32);
+        node->class_def.method_count = 0;
+        
+        while (tokens[pos].type != TOKEN_RBRACE && tokens[pos].type != TOKEN_EOF) {
+            int is_static = 0;
+            if (tokens[pos].type == TOKEN_STATIC) {
+                is_static = 1;
+                pos++;
+            }
+            if (tokens[pos].type == TOKEN_PRIVATE || tokens[pos].type == TOKEN_PUBLIC) {
+                pos++;
+            }
+            
+            char *method_name = NULL;
+            if (tokens[pos].type == TOKEN_CONSTRUCTOR) {
+                method_name = "constructor";
+                pos++;
+            } else if (tokens[pos].type == TOKEN_IDENT) {
+                method_name = tokens[pos].text;
+                pos++;
+            } else {
+                if (tokens[pos].type == TOKEN_RBRACE) break;
+                printf("Błąd: oczekiwano nazwy metody\n");
+                pos++; continue;
+            }
+            
+            Node *method = calloc(1, sizeof(Node));
+            method->type = NODE_FUNC_DEF;
+            method->func.name = strdup(method_name);
+            method->func.args = malloc(sizeof(char*) * 16);
+            method->func.arg_count = 0;
+            
+            if (tokens[pos].type == TOKEN_LPAREN) {
+                pos++;
+                while (tokens[pos].type == TOKEN_IDENT) {
+                    method->func.args[method->func.arg_count] = strdup(tokens[pos].text);
+                    method->func.arg_count++;
+                    pos++;
+                    if (tokens[pos].type == TOKEN_COMMA) pos++;
+                }
+                if (tokens[pos].type == TOKEN_RPAREN) pos++;
+            }
+            
+            method->func.body = parse_stmt();
+            node->class_def.methods[node->class_def.method_count++] = method;
+        }
+        if (tokens[pos].type == TOKEN_RBRACE) pos++;
+        return node;
+    }
+
     if (tokens[pos].type == TOKEN_KEYWORD)
     {
         if (strcmp(tokens[pos].text, "zmienna") == 0)
@@ -1037,6 +1217,7 @@ Node *parse_stmt()
                 return node;
             }
         }
+
         else if (strcmp(tokens[pos].text, "zlam") == 0)
         {
             pos++;
@@ -1148,6 +1329,35 @@ Node *parse_stmt()
 
     Node *expr = parse_expr_bp(0);
     if (expr) {
+        if (tokens[pos].type == TOKEN_ASSIGN) {
+            pos++;
+            Node *val = parse_expr_bp(0);
+            if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
+            
+            if (expr->type == NODE_MEMBER_ACCESS) {
+                Node *node = calloc(1, sizeof(Node));
+                node->type = NODE_MEMBER_ASSIGN;
+                node->member.obj = expr->member.obj;
+                node->member.name = expr->member.name;
+                node->expr = val;
+                free(expr);
+                return node;
+            }
+            else if (expr->type == NODE_ARRAY_ACCESS) {
+                Node *node = calloc(1, sizeof(Node));
+                node->type = NODE_ARRAY_ASSIGN;
+                node->array_op.obj = expr->array_op.obj;
+                node->array_op.index = expr->array_op.index;
+                node->array_op.value = val;
+                node->array_op.name = NULL;
+                free(expr);
+                return node;
+            }
+             else {
+                 printf("Błąd: nieprawidłowe przypisanie\n");
+                 return NULL;
+            }
+        }
         if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
         return expr;
     }
@@ -1186,6 +1396,14 @@ const char *keywords[] = {
     "albo",
     "rowne",
     "nierowne",
+    "klasa",
+    "konstruktor",
+    "dziedziczy",
+    "statyczna",
+    "prywatna",
+    "publiczna",
+    "nowy",
+    "to",
     "zlam",
     "pomin",
     "dla"};
@@ -1248,7 +1466,15 @@ void lex(const char *src)
             char buf[64];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
-            if (is_keyword(buf))
+            if (strcmp(buf, "klasa") == 0) add_token(TOKEN_CLASS, buf);
+            else if (strcmp(buf, "konstruktor") == 0) add_token(TOKEN_CONSTRUCTOR, buf);
+            else if (strcmp(buf, "dziedziczy") == 0) add_token(TOKEN_EXTENDS, buf);
+            else if (strcmp(buf, "statyczna") == 0) add_token(TOKEN_STATIC, buf);
+            else if (strcmp(buf, "prywatna") == 0) add_token(TOKEN_PRIVATE, buf);
+            else if (strcmp(buf, "publiczna") == 0) add_token(TOKEN_PUBLIC, buf);
+            else if (strcmp(buf, "nowy") == 0) add_token(TOKEN_NEW, buf);
+            else if (strcmp(buf, "to") == 0) add_token(TOKEN_THIS, buf);
+            else if (is_keyword(buf))
             {
                 if (strcmp(buf, "prawda") == 0) add_token(TOKEN_TRUE, buf);
                 else if (strcmp(buf, "falsz") == 0) add_token(TOKEN_FALSE, buf);
@@ -1410,6 +1636,136 @@ double eval(Node *n)
     // printf("DEBUG: eval type %d flags R%d B%d C%d\n", n->type, is_returning, is_breaking, is_continuing);
     if (is_returning || is_breaking || is_continuing) return 0;
 
+    if (n->type == NODE_CLASS_DEF) {
+        Class *cls = malloc(sizeof(Class));
+        cls->name = strdup(n->class_def.name);
+        cls->parent = n->class_def.parent ? strdup(n->class_def.parent) : NULL;
+        cls->method_count = n->class_def.method_count;
+        cls->methods = malloc(sizeof(Function) * cls->method_count);
+        
+        for (int i=0; i<cls->method_count; i++) {
+            Node *method_node = n->class_def.methods[i];
+            Function *f = &cls->methods[i];
+            strcpy(f->name, method_node->func.name);
+            f->body = method_node->func.body;
+            f->arg_count = method_node->func.arg_count;
+            f->args = malloc(sizeof(char*) * f->arg_count);
+            for (int j=0; j<f->arg_count; j++) {
+                f->args[j] = strdup(method_node->func.args[j]);
+            }
+        }
+        
+        Variable *var = env_define(current_env, cls->name);
+        var->type = TYPE_CLASS;
+        var->value.classValue = cls;
+        return 0;
+    }
+    else if (n->type == NODE_NEW) {
+        Variable *var = env_get(current_env, n->new_inst.class_name);
+        if (!var || var->type != TYPE_CLASS) {
+            printf("Błąd: nieznana klasa %s\n", n->new_inst.class_name);
+            return 0;
+        }
+        Class *cls = var->value.classValue;
+        
+        Instance *inst = malloc(sizeof(Instance));
+        inst->cls = cls;
+        inst->fields = create_dict();
+        inst->ref_count = 1;
+        
+        // Call constructor
+        Function *ctor = NULL;
+        Class *curr_cls = cls;
+        while (curr_cls) {
+            for (int i=0; i<curr_cls->method_count; i++) {
+                if (strcmp(curr_cls->methods[i].name, "constructor") == 0) {
+                    ctor = &curr_cls->methods[i];
+                    break;
+                }
+            }
+            if (ctor) break;
+            
+            if (curr_cls->parent) {
+                Variable *v = env_get(global_env, curr_cls->parent);
+                if (v && v->type == TYPE_CLASS) {
+                    curr_cls = v->value.classValue;
+                } else {
+                    curr_cls = NULL;
+                }
+            } else {
+                curr_cls = NULL;
+            }
+        }
+        
+        if (ctor) {
+            // Pre-evaluate arguments in the current scope
+            double arg_vals[16];
+            char *arg_strs[16] = {0};
+            struct Instance *arg_insts[16] = {0};
+            
+            for (int i=0; i<n->new_inst.arg_count && i < 16; i++) {
+                arg_vals[i] = eval(n->new_inst.args[i]);
+                
+                if (return_instance) {
+                    arg_insts[i] = return_instance;
+                    return_instance = NULL;
+                }
+                
+                if (n->new_inst.args[i]->string_value) {
+                    arg_strs[i] = strdup(n->new_inst.args[i]->string_value);
+                }
+            }
+
+            Env *prev_env = current_env;
+            Instance *prev_inst = current_instance;
+            
+            current_env = create_env(global_env); 
+            current_instance = inst;
+            
+            for (int i=0; i<ctor->arg_count; i++) {
+                double val = 0;
+                char *str = NULL;
+                struct Instance *ins = NULL;
+                
+                if (i < n->new_inst.arg_count) {
+                    val = arg_vals[i];
+                    str = arg_strs[i];
+                    ins = arg_insts[i];
+                }
+                
+                Variable *arg = env_define(current_env, ctor->args[i]);
+                if (ins) {
+                    arg->type = TYPE_INSTANCE;
+                    arg->value.instanceValue = ins;
+                } else if (str) {
+                    arg->type = TYPE_STRING;
+                    strcpy(arg->value.stringValue, str);
+                    free(str);
+                } else {
+                    arg->type = TYPE_DOUBLE;
+                    arg->value.doubleValue = val;
+                }
+            }
+            
+            eval(ctor->body);
+            
+            current_env = prev_env;
+            current_instance = prev_inst;
+        }
+        
+        return_instance = inst;
+        return 0;
+    }
+    else if (n->type == NODE_THIS) {
+        if (current_instance) {
+            return_instance = current_instance;
+            return 0;
+        } else {
+            printf("Błąd: użycie 'to' poza metodą\n");
+            return 0;
+        }
+    }
+
     if (n->type == NODE_BLOCK) {
         current_env = create_env(current_env); // Push scope
         for (int i=0; i<n->block.count; i++) {
@@ -1427,13 +1783,13 @@ double eval(Node *n)
         for (int i=0; i<n->block.count; i++) {
             double val = eval(n->block.stmts[i]);
             if (n->block.stmts[i]->string_value) {
-                array_push(arr, 0, n->block.stmts[i]->string_value, NULL, NULL);
+                array_push(arr, 0, n->block.stmts[i]->string_value, NULL, NULL, NULL);
             } else if (n->block.stmts[i]->array_value) {
-                array_push(arr, 0, NULL, n->block.stmts[i]->array_value, NULL);
+                array_push(arr, 0, NULL, n->block.stmts[i]->array_value, NULL, NULL);
             } else if (n->block.stmts[i]->dict_value) {
-                array_push(arr, 0, NULL, NULL, n->block.stmts[i]->dict_value);
+                array_push(arr, 0, NULL, NULL, n->block.stmts[i]->dict_value, NULL);
             } else {
-                array_push(arr, val, NULL, NULL, NULL);
+                array_push(arr, val, NULL, NULL, NULL, NULL);
             }
         }
         n->array_value = arr;
@@ -1447,13 +1803,13 @@ double eval(Node *n)
             double val = eval(valNode);
             
             if (valNode->string_value) {
-                dict_set(d, key, 0, valNode->string_value, NULL, NULL);
+                dict_set(d, key, 0, valNode->string_value, NULL, NULL, NULL);
             } else if (valNode->array_value) {
-                dict_set(d, key, 0, NULL, valNode->array_value, NULL);
+                dict_set(d, key, 0, NULL, valNode->array_value, NULL, NULL);
             } else if (valNode->dict_value) {
-                dict_set(d, key, 0, NULL, NULL, valNode->dict_value);
+                dict_set(d, key, 0, NULL, NULL, valNode->dict_value, NULL);
             } else {
-                dict_set(d, key, val, NULL, NULL, NULL);
+                dict_set(d, key, val, NULL, NULL, NULL, NULL);
             }
         }
         n->dict_value = d;
@@ -1537,10 +1893,30 @@ double eval(Node *n)
         return 0;
     }
     else if (n->type == NODE_ARRAY_ASSIGN) {
-        Variable *var = get_variable(n->array_op.name);
-        if (!var) { printf("Błąd: nieznana zmienna %s\n", n->array_op.name); return 0; }
+        Array *arr = NULL;
+        Dict *dict = NULL;
         
-        if (var->type == TYPE_DICT) {
+        if (n->array_op.name) {
+            Variable *var = get_variable(n->array_op.name);
+            if (!var) { printf("Błąd: nieznana zmienna %s\n", n->array_op.name); return 0; }
+            if (var->type == TYPE_ARRAY) arr = var->value.arrayValue;
+            else if (var->type == TYPE_DICT) dict = var->value.dictValue;
+            else { printf("Błąd: zmienna %s nie jest tablicą ani słownikiem\n", n->array_op.name); return 0; }
+        } else if (n->array_op.obj) {
+            eval(n->array_op.obj);
+            if (n->array_op.obj->array_value) arr = n->array_op.obj->array_value;
+            else if (n->array_op.obj->dict_value) dict = n->array_op.obj->dict_value;
+            else if (n->array_op.obj->type == NODE_VARIABLE) {
+                 Variable *v = get_variable(n->array_op.obj->var_name);
+                 if (v) {
+                     if (v->type == TYPE_ARRAY) arr = v->value.arrayValue;
+                     else if (v->type == TYPE_DICT) dict = v->value.dictValue;
+                 }
+            }
+            if (!arr && !dict) { printf("Błąd: obiekt nie jest tablicą ani słownikiem\n"); return 0; }
+        }
+        
+        if (dict) {
             eval(n->array_op.index);
             char *key = NULL;
             if (n->array_op.index->string_value) {
@@ -1552,30 +1928,92 @@ double eval(Node *n)
             
             double val = eval(n->array_op.value);
             if (n->array_op.value->type == NODE_ARRAY_LITERAL) {
-                dict_set(var->value.dictValue, key, 0, NULL, n->array_op.value->array_value, NULL);
+                dict_set(dict, key, 0, NULL, n->array_op.value->array_value, NULL, NULL);
             } else if (n->array_op.value->type == NODE_DICT_LITERAL) {
-                dict_set(var->value.dictValue, key, 0, NULL, NULL, n->array_op.value->dict_value);
+                dict_set(dict, key, 0, NULL, NULL, n->array_op.value->dict_value, NULL);
             } else if (n->array_op.value->string_value) {
-                dict_set(var->value.dictValue, key, 0, n->array_op.value->string_value, NULL, NULL);
+                dict_set(dict, key, 0, n->array_op.value->string_value, NULL, NULL, NULL);
             } else {
-                dict_set(var->value.dictValue, key, val, NULL, NULL, NULL);
+                dict_set(dict, key, val, NULL, NULL, NULL, NULL);
             }
             return 0;
         }
         
-        if (var->type != TYPE_ARRAY) {
-            printf("Błąd: zmienna %s nie jest tablicą ani słownikiem\n", n->array_op.name);
+        if (arr) {
+            double idx_d = eval(n->array_op.index);
+            int idx = (int)idx_d;
+            double val = eval(n->array_op.value);
+            
+            if (n->array_op.value->string_value) {
+                array_set(arr, idx, 0, n->array_op.value->string_value);
+            } else {
+                array_set(arr, idx, val, NULL);
+            }
             return 0;
         }
-        double idx_d = eval(n->array_op.index);
-        int idx = (int)idx_d;
-        double val = eval(n->array_op.value);
+        return 0;
+    }
+    else if (n->type == NODE_MEMBER_ASSIGN) {
+        Instance *inst = NULL;
+        Dict *dict = NULL;
         
-        if (n->array_op.value->string_value) {
-            array_set(var->value.arrayValue, idx, 0, n->array_op.value->string_value);
+        if (n->member.obj->type == NODE_VARIABLE) {
+            Variable *var = get_variable(n->member.obj->var_name);
+            if (var) {
+                if (var->type == TYPE_INSTANCE) {
+                    inst = var->value.instanceValue;
+                } else if (var->type == TYPE_DICT) {
+                    dict = var->value.dictValue;
+                }
+            }
+        } else if (n->member.obj->type == NODE_THIS) {
+            inst = current_instance;
         } else {
-            array_set(var->value.arrayValue, idx, val, NULL);
+             eval(n->member.obj);
+             if (return_instance) {
+                 inst = return_instance;
+                 return_instance = NULL;
+             } else if (n->member.obj->dict_value) {
+                 dict = n->member.obj->dict_value;
+             }
         }
+        
+        if (inst || dict) {
+            Dict *target = inst ? inst->fields : dict;
+            
+            double val = eval(n->expr);
+            char *str_val = NULL;
+            Array *arr_val = NULL;
+            Dict *dict_val = NULL;
+            struct Instance *inst_val = NULL;
+            
+            if (return_instance) {
+                inst_val = return_instance;
+                return_instance = NULL;
+            }
+            
+            if (n->expr->type == NODE_ARRAY_LITERAL || n->expr->array_value) {
+                arr_val = n->expr->array_value;
+            } else if (n->expr->type == NODE_DICT_LITERAL || n->expr->dict_value) {
+                dict_val = n->expr->dict_value;
+            } else if (n->expr->string_value) {
+                str_val = n->expr->string_value;
+            }
+            
+            if (inst_val) {
+                dict_set(target, n->member.name, 0, NULL, NULL, NULL, inst_val);
+            } else if (arr_val) {
+                dict_set(target, n->member.name, 0, NULL, arr_val, NULL, NULL);
+            } else if (dict_val) {
+                dict_set(target, n->member.name, 0, NULL, NULL, dict_val, NULL);
+            } else if (str_val) {
+                dict_set(target, n->member.name, 0, str_val, NULL, NULL, NULL);
+            } else {
+                dict_set(target, n->member.name, val, NULL, NULL, NULL, NULL);
+            }
+            return 0;
+        }
+        printf("Błąd: przypisanie do pola obiektu, który nie jest instancją ani słownikiem\n");
         return 0;
     }
     else if (n->type == NODE_ASSIGN) {
@@ -1584,7 +2022,13 @@ double eval(Node *n)
         char *str_val = NULL;
         Array *arr_val = NULL;
         Dict *dict_val = NULL;
+        struct Instance *inst_val = NULL;
         int is_bool = (n->expr->type == NODE_BOOL);
+        
+        if (return_instance) {
+            inst_val = return_instance;
+            return_instance = NULL;
+        }
         
         // Check if expression resulted in boolean (e.g. comparison)
         if (n->expr->type == NODE_OPERATION) {
@@ -1610,7 +2054,10 @@ double eval(Node *n)
             if (var->type == TYPE_ARRAY) decref_array(var->value.arrayValue);
             if (var->type == TYPE_DICT) decref_dict(var->value.dictValue);
             
-            if (arr_val) {
+            if (inst_val) {
+                var->type = TYPE_INSTANCE;
+                var->value.instanceValue = inst_val;
+            } else if (arr_val) {
                 var->type = TYPE_ARRAY;
                 var->value.arrayValue = arr_val;
                 incref_array(arr_val);
@@ -1638,7 +2085,13 @@ double eval(Node *n)
         char *str_val = NULL;
         Array *arr_val = NULL;
         Dict *dict_val = NULL;
+        struct Instance *inst_val = NULL;
         int is_bool = (n->expr->type == NODE_BOOL);
+        
+        if (return_instance) {
+            inst_val = return_instance;
+            return_instance = NULL;
+        }
         
         if (n->expr->type == NODE_OPERATION) {
              int op = n->expr->op.op_type;
@@ -1658,7 +2111,10 @@ double eval(Node *n)
         
         Variable *var = env_define(current_env, n->var_name);
         if (var) {
-            if (arr_val) {
+            if (inst_val) {
+                var->type = TYPE_INSTANCE;
+                var->value.instanceValue = inst_val;
+            } else if (arr_val) {
                 var->type = TYPE_ARRAY;
                 var->value.arrayValue = arr_val;
                 incref_array(arr_val);
@@ -2007,6 +2463,10 @@ double eval(Node *n)
                 n->dict_value = var->value.dictValue;
                 return 0;
             }
+            if (var->type == TYPE_INSTANCE) {
+                return_instance = var->value.instanceValue;
+                return 0;
+            }
             return 0;
         }
         printf("Nieznana zmienna: %s\n", n->var_name ? n->var_name : "(null)");
@@ -2118,6 +2578,102 @@ double eval(Node *n)
             var = get_variable(n->method.obj->var_name);
         }
 
+        if (var && var->type == TYPE_INSTANCE) {
+            Instance *inst = var->value.instanceValue;
+            Class *cls = inst->cls;
+            
+            Function *method = NULL;
+            Class *curr_cls = cls;
+            while (curr_cls) {
+                for (int i=0; i<curr_cls->method_count; i++) {
+                    if (strcmp(curr_cls->methods[i].name, n->method.name) == 0) {
+                        method = &curr_cls->methods[i];
+                        break;
+                    }
+                }
+                if (method) break;
+                
+                if (curr_cls->parent) {
+                    Variable *v = env_get(global_env, curr_cls->parent);
+                    if (v && v->type == TYPE_CLASS) {
+                        curr_cls = v->value.classValue;
+                    } else {
+                        curr_cls = NULL;
+                    }
+                } else {
+                    curr_cls = NULL;
+                }
+            }
+            
+            if (method) {
+                // Pre-evaluate args
+                double arg_vals[16];
+                char *arg_strs[16] = {0};
+                struct Instance *arg_insts[16] = {0};
+                
+                for (int i=0; i<n->method.arg_count && i < 16; i++) {
+                    arg_vals[i] = eval(n->method.args[i]);
+                    if (return_instance) {
+                        arg_insts[i] = return_instance;
+                        return_instance = NULL;
+                    }
+                    if (n->method.args[i]->string_value) {
+                        arg_strs[i] = strdup(n->method.args[i]->string_value);
+                    }
+                }
+
+                Env *prev_env = current_env;
+                Instance *prev_inst = current_instance;
+                
+                current_env = create_env(global_env);
+                current_instance = inst;
+                
+                for (int i=0; i<method->arg_count; i++) {
+                    double val = 0;
+                    char *str = NULL;
+                    struct Instance *ins = NULL;
+                    
+                    if (i < n->method.arg_count) {
+                        val = arg_vals[i];
+                        str = arg_strs[i];
+                        ins = arg_insts[i];
+                    }
+                    
+                    Variable *arg = env_define(current_env, method->args[i]);
+                    if (ins) {
+                        arg->type = TYPE_INSTANCE;
+                        arg->value.instanceValue = ins;
+                    } else if (str) {
+                        arg->type = TYPE_STRING;
+                        strcpy(arg->value.stringValue, str);
+                        free(str);
+                    } else {
+                        arg->type = TYPE_DOUBLE;
+                        arg->value.doubleValue = val;
+                    }
+                }
+                
+                eval(method->body);
+                
+                // Cleanup
+                for(int i=0; i<n->method.arg_count; i++) {
+                    if (arg_strs[i]) free(arg_strs[i]);
+                }
+
+                current_env = prev_env;
+                current_instance = prev_inst;
+                
+                if (is_returning) {
+                    is_returning = 0;
+                    return return_value;
+                }
+                return 0;
+            } else {
+                printf("Błąd: nieznana metoda %s\n", n->method.name);
+                return 0;
+            }
+        }
+
         // String methods
         char *str_obj = NULL;
         if (var && var->type == TYPE_STRING) {
@@ -2179,7 +2735,7 @@ double eval(Node *n)
                 char *temp = strdup(str_obj);
                 char *token = strtok(temp, delim);
                 while (token) {
-                    array_push(arr, 0, token, NULL, NULL);
+                    array_push(arr, 0, token, NULL, NULL, NULL);
                     token = strtok(NULL, delim);
                 }
                 free(temp);
@@ -2196,13 +2752,13 @@ double eval(Node *n)
                 if (n->method.arg_count >= 1) {
                     double val = eval(n->method.args[0]);
                     if (n->method.args[0]->string_value) {
-                        array_push(var->value.arrayValue, 0, n->method.args[0]->string_value, NULL, NULL);
+                        array_push(var->value.arrayValue, 0, n->method.args[0]->string_value, NULL, NULL, NULL);
                     } else if (n->method.args[0]->array_value) {
-                        array_push(var->value.arrayValue, 0, NULL, n->method.args[0]->array_value, NULL);
+                        array_push(var->value.arrayValue, 0, NULL, n->method.args[0]->array_value, NULL, NULL);
                     } else if (n->method.args[0]->dict_value) {
-                        array_push(var->value.arrayValue, 0, NULL, NULL, n->method.args[0]->dict_value);
+                        array_push(var->value.arrayValue, 0, NULL, NULL, n->method.args[0]->dict_value, NULL);
                     } else {
-                        array_push(var->value.arrayValue, val, NULL, NULL, NULL);
+                        array_push(var->value.arrayValue, val, NULL, NULL, NULL, NULL);
                     }
                 }
                 return 0;
@@ -2239,12 +2795,152 @@ double eval(Node *n)
                 }
             }
 
-            eval(obj);
+            if (obj->type != NODE_VARIABLE) {
+                eval(obj);
+            }
             
             Array *arr = NULL;
             Dict *dict = NULL;
             char *str = NULL;
             
+            if (obj->type == NODE_VARIABLE) {
+                Variable *var = get_variable(obj->var_name);
+                if (var) {
+                    if (var->type == TYPE_INSTANCE) {
+                        Instance *inst = var->value.instanceValue;
+                        ArrayElement *el = dict_get(inst->fields, n->member.name);
+                        if (el) {
+                            if (el->type == 0) return el->value.doubleValue;
+                            if (el->type == 1) {
+                                if (n->string_value) free(n->string_value);
+                                n->string_value = strdup(el->value.stringValue);
+                                return 0;
+                            }
+                            if (el->type == 2) {
+                                n->array_value = el->value.arrayValue;
+                                return 0;
+                            }
+                            if (el->type == 4) {
+                                n->dict_value = el->value.dictValue;
+                                return 0;
+                            }
+                            if (el->type == 6) {
+                                return_instance = el->value.instanceValue;
+                                return 0;
+                            }
+                        }
+                        return 0;
+                    } else if (var->type == TYPE_DICT) {
+                        Dict *dict = var->value.dictValue;
+                        ArrayElement *el = dict_get(dict, n->member.name);
+                        if (el) {
+                            if (el->type == 0) return el->value.doubleValue;
+                            if (el->type == 1) {
+                                if (n->string_value) free(n->string_value);
+                                n->string_value = strdup(el->value.stringValue);
+                                return 0;
+                            }
+                            if (el->type == 2) {
+                                n->array_value = el->value.arrayValue;
+                                return 0;
+                            }
+                            if (el->type == 4) {
+                                n->dict_value = el->value.dictValue;
+                                return 0;
+                            }
+                            if (el->type == 6) {
+                                return_instance = el->value.instanceValue;
+                                return 0;
+                            }
+                        }
+                        return 0;
+                    }
+                }
+            }
+            
+            if (return_instance) {
+                Instance *inst = return_instance;
+                return_instance = NULL;
+                ArrayElement *el = dict_get(inst->fields, n->member.name);
+                if (el) {
+                    if (el->type == 0) return el->value.doubleValue;
+                    if (el->type == 1) {
+                        if (n->string_value) free(n->string_value);
+                        n->string_value = strdup(el->value.stringValue);
+                        return 0;
+                    }
+                    if (el->type == 2) {
+                        n->array_value = el->value.arrayValue;
+                        return 0;
+                    }
+                    if (el->type == 4) {
+                        n->dict_value = el->value.dictValue;
+                        return 0;
+                    }
+                    if (el->type == 6) {
+                            return_instance = el->value.instanceValue;
+                            return 0;
+                    }
+                }
+                return 0;
+            }
+
+            // Handle dict literal or other expressions returning dict
+            if (obj->dict_value) {
+                Dict *dict = obj->dict_value;
+                ArrayElement *el = dict_get(dict, n->member.name);
+                if (el) {
+                    if (el->type == 0) return el->value.doubleValue;
+                    if (el->type == 1) {
+                        if (n->string_value) free(n->string_value);
+                        n->string_value = strdup(el->value.stringValue);
+                        return 0;
+                    }
+                    if (el->type == 2) {
+                        n->array_value = el->value.arrayValue;
+                        return 0;
+                    }
+                    if (el->type == 4) {
+                        n->dict_value = el->value.dictValue;
+                        return 0;
+                    }
+                    if (el->type == 6) {
+                        return_instance = el->value.instanceValue;
+                        return 0;
+                    }
+                }
+                return 0;
+            }
+            
+            if (obj->type == NODE_THIS) {
+                if (current_instance) {
+                    Instance *inst = current_instance;
+                    ArrayElement *el = dict_get(inst->fields, n->member.name);
+                    if (el) {
+                        printf("DEBUG: Reading member %s = %f\n", n->member.name, el->value.doubleValue);
+                        if (el->type == 0) return el->value.doubleValue;
+                        if (el->type == 1) {
+                            if (n->string_value) free(n->string_value);
+                            n->string_value = strdup(el->value.stringValue);
+                            return 0;
+                        }
+                        if (el->type == 2) {
+                            n->array_value = el->value.arrayValue;
+                            return 0;
+                        }
+                        if (el->type == 4) {
+                            n->dict_value = el->value.dictValue;
+                            return 0;
+                        }
+                        if (el->type == 6) {
+                             return_instance = el->value.instanceValue;
+                             return 0;
+                        }
+                    }
+                    return 0;
+                }
+            }
+
             if (obj->type == NODE_ARRAY_LITERAL || obj->array_value) {
                 arr = obj->array_value;
             } else if (obj->type == NODE_DICT_LITERAL || obj->dict_value) {
