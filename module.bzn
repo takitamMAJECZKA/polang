@@ -1,5 +1,0 @@
-pisz "To jest modul";
-zmienna x = 10;
-funkcja powitanie(imie) {
-    pisz "Czesc " + imie;
-}

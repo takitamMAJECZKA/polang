@@ -1,0 +1,113 @@
+pisz "=== ROZPOCZYNAM TESTY KOMPLEKSOWE ===";
+
+// 1. MATEMATYKA I OPERATORY
+pisz "--- 1. Matematyka ---";
+zmienna a = 10;
+zmienna b = 3;
+zmienna c = (a + b) * 2 - 6; // (13)*2 - 6 = 26 - 6 = 20
+pisz "Wynik (a+b)*2-6: ${c} (oczekiwano 20)";
+
+zmienna bitwise = (60 & 13) | (60 ^ 13); // 12 | 49 = 61
+pisz "Bitwise (60&13)|(60^13): ${bitwise} (oczekiwano 61)";
+
+zmienna shift = 1 << 4; // 16
+pisz "Shift 1<<4: ${shift} (oczekiwano 16)";
+
+// 2. LOGIKA
+pisz "--- 2. Logika ---";
+jezeli (a > b && c == 20) {
+    pisz "Logika OK: a > b i c == 20";
+} inaczej {
+    pisz "BŁĄD: Logika zawiodła";
+}
+
+jezeli (a < b || c != 20) {
+    pisz "BŁĄD: Logika OR/NEQ zawiodła";
+} inaczej {
+    pisz "Logika OK: warunek fałszywy poprawnie obsłużony";
+}
+
+// 3. PĘTLE I STEROWANIE
+pisz "--- 3. Pętle ---";
+zmienna i = 0;
+zmienna suma = 0;
+wkolko (i < 5) {
+    suma = suma + i;
+    i = i + 1;
+}
+pisz "Suma 0..4 (wkolko): ${suma} (oczekiwano 10)";
+
+suma = 0;
+dla (zmienna j = 0; j < 5; j = j + 1) {
+    jezeli (j == 2) { pomin; }
+    jezeli (j == 4) { zlam; }
+    suma = suma + j;
+}
+pisz "Suma z continue/break: ${suma} (oczekiwano 0+1+3=4)";
+
+// 4. FUNKCJE I REKURENCJA
+pisz "--- 4. Funkcje ---";
+funkcja silnia(n) {
+    jezeli (n <= 1) { zwroc 1; }
+    zwroc n * silnia(n - 1);
+}
+pisz "Silnia(5): ${silnia(5)} (oczekiwano 120)";
+
+funkcja dodaj_generator(x) {
+    funkcja dodaj(y) {
+        zwroc x + y;
+    }
+    zwroc dodaj;
+}
+zmienna dodaj5 = dodaj_generator(5);
+pisz "Closure (5+10): ${dodaj5(10)} (oczekiwano 15)";
+
+// 5. TABLICE I OBIEKTY
+pisz "--- 5. Tablice i Obiekty ---";
+zmienna arr = [10, 20, 30];
+pisz "Tablica[1]: ${arr[1]} (oczekiwano 20)";
+
+zmienna obj = { "imie": "Jan", "wiek": 40 };
+pisz "Obiekt.imie: ${obj.imie} (oczekiwano Jan)";
+pisz "Obiekt['wiek']: ${obj['wiek']} (oczekiwano 40)";
+
+zmienna nested = { "dane": [1, 2, { "val": 99 }] };
+pisz "Zagnieżdżone: ${nested.dane[2].val} (oczekiwano 99)";
+
+// 6. KLASY I OOP
+pisz "--- 6. OOP ---";
+klasa Zwierze {
+    konstruktor(imie) {
+        to.imie = imie;
+    }
+    dajGlos() {
+        zwroc "Grrr";
+    }
+}
+
+klasa Pies dziedziczy Zwierze {
+    konstruktor(imie, rasa) {
+        // super(imie); // super nie jest wspierane
+        to.imie = imie; 
+        to.rasa = rasa;
+    }
+    dajGlos() {
+        zwroc "Hau Hau";
+    }
+    opis() {
+        zwroc "${to.imie} to ${to.rasa}";
+    }
+}
+
+zmienna burek = nowy Pies("Burek", "Kundel");
+pisz "Pies: ${burek.opis()}";
+pisz "Głos: ${burek.dajGlos()}";
+
+// 7. KONWERSJA TYPÓW
+pisz "--- 7. Konwersja ---";
+zmienna num = 123;
+zmienna str = "456";
+pisz "Liczba jako tekst: " + tekst(num);
+pisz "Tekst jako liczba + 1: ${liczba(str) + 1} (oczekiwano 457)";
+
+pisz "=== TESTY ZAKOŃCZONE SUKCESEM ===";

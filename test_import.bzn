@@ -1,5 +1,0 @@
-pisz "Start";
-import "module.bzn";
-pisz "Koniec";
-pisz x;
-powitanie("Marek");

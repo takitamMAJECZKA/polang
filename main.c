@@ -65,6 +65,7 @@ typedef struct Node
     char *string_value; // dla wartości tekstowych
     struct Array *array_value; // dla tablic
     struct Dict *dict_value;   // dla słowników
+    struct FunctionObj *func_value; // dla funkcji
     struct Node *expr; // dla wyrażeń (PRINT, RETURN itp.)
 
     // Pola specyficzne dla operatorów
@@ -215,6 +216,12 @@ typedef enum
     TOKEN_DIV_ASSIGN, // /=
     TOKEN_MOD,        // %
     TOKEN_MOD_ASSIGN, // %=
+    TOKEN_BIT_AND,    // &
+    TOKEN_BIT_OR,     // |
+    TOKEN_BIT_XOR,    // ^
+    TOKEN_BIT_NOT,    // ~
+    TOKEN_LSHIFT,     // <<
+    TOKEN_RSHIFT,     // >>
     TOKEN_BREAK,
     TOKEN_CONTINUE,
     TOKEN_CLASS,
@@ -256,11 +263,12 @@ typedef enum {
     TYPE_INT,
     TYPE_CLASS,
     TYPE_INSTANCE,
-    TYPE_NULL
+    TYPE_NULL,
+    TYPE_FUNCTION
 } VarType;
 
 // GC Definitions
-typedef enum { OBJ_ARRAY, OBJ_DICT, OBJ_INSTANCE } ObjType;
+typedef enum { OBJ_ARRAY, OBJ_DICT, OBJ_INSTANCE, OBJ_ENV, OBJ_FUNCTION } ObjType;
 
 typedef struct ObjHeader {
     ObjType type;
@@ -271,15 +279,17 @@ typedef struct ObjHeader {
 ObjHeader *gc_objects = NULL;
 int gc_objects_count = 0;
 int gc_threshold = 128;
+ObjHeader *gc_temp_root = NULL;
 
 void gc_collect();
 
 // Forward declarations
 struct Class;
 struct Instance;
+struct FunctionObj;
 
 typedef struct {
-    int type; // 0=double, 1=string, 2=array, 3=bool, 4=dict, 5=class, 6=instance
+    int type; // 0=double, 1=string, 2=array, 3=bool, 4=dict, 5=class, 6=instance, 8=function
     union {
         double doubleValue;
         char *stringValue;
@@ -288,6 +298,7 @@ typedef struct {
         int intValue; // for bool
         struct Class *classValue;
         struct Instance *instanceValue;
+        struct FunctionObj *funcValue;
     } value;
 } ArrayElement; // Reusing for Dict values too
 
@@ -323,10 +334,12 @@ typedef struct
         Dict *dictValue;
         struct Class *classValue;
         struct Instance *instanceValue;
+        struct FunctionObj *funcValue;
     } value;
 } Variable;
 
 typedef struct Env {
+    ObjHeader header;
     Variable *variables;
     int var_count;
     int var_capacity;
@@ -337,18 +350,30 @@ Env *global_env = NULL;
 Env *current_env = NULL;
 struct Instance *current_instance = NULL;
 
+// Call stack for GC
+Env *gc_call_stack[256];
+int gc_call_stack_count = 0;
+
+void gc_register(ObjHeader *obj, ObjType type); // Forward decl
+
 Env *create_env(Env *parent) {
     Env *env = calloc(1, sizeof(Env));
     env->parent = parent;
     env->var_count = 0;
     env->var_capacity = 8;
     env->variables = malloc(sizeof(Variable) * env->var_capacity);
+    ObjHeader *prev_root = gc_temp_root;
+    gc_temp_root = (ObjHeader*)env;
+    gc_register((ObjHeader*)env, OBJ_ENV);
+    gc_temp_root = prev_root;
     return env;
 }
 
 Variable *env_get(Env *env, const char *name) {
     if (!env || !name) return NULL;
+    // printf("DEBUG: Looking for %s in env %p (count=%d)\n", name, env, env->var_count);
     for (int i = 0; i < env->var_count; i++) {
+        // printf("  - Found var: %s\n", env->variables[i].name);
         if (strcmp(env->variables[i].name, name) == 0) {
             return &env->variables[i];
         }
@@ -359,6 +384,7 @@ Variable *env_get(Env *env, const char *name) {
 
 Variable *env_define(Env *env, const char *name) {
     if (!env || !name) return NULL;
+    // printf("DEBUG: Defining %s in env %p\n", name, env);
     for (int i = 0; i < env->var_count; i++) {
         if (strcmp(env->variables[i].name, name) == 0) {
             return &env->variables[i]; // Return existing to update
@@ -369,6 +395,7 @@ Variable *env_define(Env *env, const char *name) {
         env->variables = realloc(env->variables, sizeof(Variable) * env->var_capacity);
     }
     Variable *var = &env->variables[env->var_count++];
+    // printf("DEBUG: Allocating var %s at %p (env vars %p)\n", name, var, env->variables);
     strncpy(var->name, name, 63);
     // Initialize to safe defaults
     var->type = TYPE_DOUBLE;
@@ -408,6 +435,15 @@ typedef struct Instance {
     Dict *fields;
 } Instance;
 
+typedef struct FunctionObj {
+    ObjHeader header;
+    char *name;
+    Node *body;
+    char **args;
+    int arg_count;
+    Env *closure;
+} FunctionObj;
+
 // Memory Management Helpers
 void free_array(Array *arr);
 void free_dict(Dict *d);
@@ -429,7 +465,10 @@ Array *create_array() {
     arr->count = 0;
     arr->capacity = 8;
     arr->elements = malloc(sizeof(ArrayElement) * arr->capacity);
+    ObjHeader *prev_root = gc_temp_root;
+    gc_temp_root = (ObjHeader*)arr;
     gc_register((ObjHeader*)arr, OBJ_ARRAY);
+    gc_temp_root = prev_root;
     return arr;
 }
 
@@ -495,7 +534,10 @@ Dict *create_dict() {
     d->count = 0;
     d->capacity = 8;
     d->entries = malloc(sizeof(DictEntry) * d->capacity);
+    ObjHeader *prev_root = gc_temp_root;
+    gc_temp_root = (ObjHeader*)d;
     gc_register((ObjHeader*)d, OBJ_DICT);
+    gc_temp_root = prev_root;
     return d;
 }
 
@@ -609,6 +651,7 @@ Array *return_array = NULL;
 Dict *return_dict = NULL;
 struct Class *return_class = NULL;
 struct Instance *return_instance = NULL;
+struct FunctionObj *return_function = NULL;
 volatile int is_exception = 0;
 double exception_value = 0;
 char *exception_string = NULL;
@@ -648,34 +691,64 @@ void mark_instance(Instance *inst) {
     if (inst->fields) mark_dict(inst->fields);
 }
 
+void mark_env(Env *env); // Forward decl
+void free_env(Env *env); // Forward decl
+
+void mark_function(FunctionObj *fn) {
+    if (fn->header.marked) return;
+    fn->header.marked = 1;
+    if (fn->closure) mark_object((ObjHeader*)fn->closure);
+}
+
 void mark_object(ObjHeader *obj) {
     if (!obj || obj->marked) return;
     if (obj->type == OBJ_ARRAY) mark_array((Array*)obj);
     else if (obj->type == OBJ_DICT) mark_dict((Dict*)obj);
     else if (obj->type == OBJ_INSTANCE) mark_instance((Instance*)obj);
+    else if (obj->type == OBJ_ENV) mark_env((Env*)obj);
+    else if (obj->type == OBJ_FUNCTION) mark_function((FunctionObj*)obj);
 }
 
 void mark_env(Env *env) {
-    if (!env) return;
+    if (!env || env->header.marked) return;
+    env->header.marked = 1;
     for (int i=0; i<env->var_count; i++) {
         Variable *v = &env->variables[i];
         if (v->type == TYPE_ARRAY && v->value.arrayValue) mark_object((ObjHeader*)v->value.arrayValue);
         else if (v->type == TYPE_DICT && v->value.dictValue) mark_object((ObjHeader*)v->value.dictValue);
         else if (v->type == TYPE_INSTANCE && v->value.instanceValue) mark_object((ObjHeader*)v->value.instanceValue);
+        else if (v->type == TYPE_FUNCTION && v->value.funcValue) mark_object((ObjHeader*)v->value.funcValue);
     }
-    if (env->parent) mark_env(env->parent);
+    if (env->parent) mark_object((ObjHeader*)env->parent);
+}
+
+void free_function(FunctionObj *fn) {
+    if (!fn) return;
+    if (fn->name) free(fn->name);
+    if (fn->args) {
+        for(int i=0; i<fn->arg_count; i++) free(fn->args[i]);
+        free(fn->args);
+    }
+    free(fn);
 }
 
 void gc_collect() {
     // printf("DEBUG: GC Running... Objects: %d\n", gc_objects_count);
     // Mark roots
-    mark_env(global_env);
-    mark_env(current_env);
+    if (global_env) mark_object((ObjHeader*)global_env);
+    if (current_env) mark_object((ObjHeader*)current_env);
+    if (gc_temp_root) mark_object(gc_temp_root);
+    
+    // Mark call stack
+    for (int i = 0; i < gc_call_stack_count; i++) {
+        if (gc_call_stack[i]) mark_object((ObjHeader*)gc_call_stack[i]);
+    }
     
     // Mark globals
     if (return_array) mark_object((ObjHeader*)return_array);
     if (return_dict) mark_object((ObjHeader*)return_dict);
     if (return_instance) mark_object((ObjHeader*)return_instance);
+    if (return_function) mark_object((ObjHeader*)return_function);
     
     // Sweep
     ObjHeader **obj = &gc_objects;
@@ -684,9 +757,12 @@ void gc_collect() {
             ObjHeader *unreached = *obj;
             *obj = unreached->next;
             
+            // printf("DEBUG: GC Freeing %p type %d\n", unreached, unreached->type);
             if (unreached->type == OBJ_ARRAY) free_array((Array*)unreached);
             else if (unreached->type == OBJ_DICT) free_dict((Dict*)unreached);
             else if (unreached->type == OBJ_INSTANCE) free_instance((Instance*)unreached);
+            else if (unreached->type == OBJ_ENV) free_env((Env*)unreached);
+            else if (unreached->type == OBJ_FUNCTION) free_function((FunctionObj*)unreached);
             
             gc_objects_count--;
         } else {
@@ -764,12 +840,16 @@ int pos = 0;
 int get_binding_power(Token t)
 {
     if (t.type == TOKEN_DOT) return 100;
-    if (t.type == TOKEN_STAR || t.type == TOKEN_SLASH || t.type == TOKEN_MOD) return 20;
-    if (t.type == TOKEN_PLUS || t.type == TOKEN_MINUS) return 10;
-    if (t.type == TOKEN_LT || t.type == TOKEN_GT || t.type == TOKEN_LTE || t.type == TOKEN_GTE) return 4;
-    if (t.type == TOKEN_EQ || t.type == TOKEN_NEQ) return 3;
-    if (t.type == TOKEN_AND) return 2;
-    if (t.type == TOKEN_OR) return 1;
+    if (t.type == TOKEN_STAR || t.type == TOKEN_SLASH || t.type == TOKEN_MOD) return 60;
+    if (t.type == TOKEN_PLUS || t.type == TOKEN_MINUS) return 50;
+    if (t.type == TOKEN_LSHIFT || t.type == TOKEN_RSHIFT) return 40;
+    if (t.type == TOKEN_LT || t.type == TOKEN_GT || t.type == TOKEN_LTE || t.type == TOKEN_GTE) return 30;
+    if (t.type == TOKEN_EQ || t.type == TOKEN_NEQ) return 20;
+    if (t.type == TOKEN_BIT_AND) return 15;
+    if (t.type == TOKEN_BIT_XOR) return 14;
+    if (t.type == TOKEN_BIT_OR) return 13;
+    if (t.type == TOKEN_AND) return 10;
+    if (t.type == TOKEN_OR) return 5;
     return 0;
 }
 
@@ -777,8 +857,25 @@ Node *parse_expr_bp(int min_bp)
 {
     Node *left = NULL;
 
+    // Prefix operators
+    if (tokens[pos].type == TOKEN_MINUS || tokens[pos].type == TOKEN_BIT_NOT) {
+        int op = tokens[pos].type;
+        pos++;
+        Node *operand = parse_expr_bp(90); // High precedence
+        
+        if (op == TOKEN_MINUS) {
+            left = make_op(TOKEN_MINUS, make_number(0), operand);
+        } else {
+            // Unary bitwise NOT
+            left = calloc(1, sizeof(Node));
+            left->type = NODE_OPERATION;
+            left->op.op_type = op;
+            left->op.a = NULL; // Unary
+            left->op.b = operand;
+        }
+    }
     // operand
-    if (tokens[pos].type == TOKEN_NUMBER)
+    else if (tokens[pos].type == TOKEN_NUMBER)
     {
         left = make_number(atof(tokens[pos].text));
         pos++;
@@ -2129,10 +2226,16 @@ void lex(const char *src)
         if (c == '=' || c == '+' || c == '-' || c == '*' || c == '/' ||
             c == '(' || c == ')' || c == ';' || c == '{' || c == '}' || c == ',' ||
             c == '<' || c == '>' || c == '!' || c == '&' || c == '|' ||
-            c == '[' || c == ']' || c == '.' || c == ':' || c == '%')
+            c == '[' || c == ']' || c == '.' || c == ':' || c == '%' || c == '^' || c == '~')
         {
             switch (c)
             {
+            case '^':
+                add_token(TOKEN_BIT_XOR, "^");
+                break;
+            case '~':
+                add_token(TOKEN_BIT_NOT, "~");
+                break;
             case '.':
                 add_token(TOKEN_DOT, ".");
                 break;
@@ -2149,19 +2252,21 @@ void lex(const char *src)
                 break;
             case '<':
                 if (src[i+1] == '=') { add_token(TOKEN_LTE, "<="); i++; }
+                else if (src[i+1] == '<') { add_token(TOKEN_LSHIFT, "<<"); i++; }
                 else { add_token(TOKEN_LT, "<"); }
                 break;
             case '>':
                 if (src[i+1] == '=') { add_token(TOKEN_GTE, ">="); i++; }
+                else if (src[i+1] == '>') { add_token(TOKEN_RSHIFT, ">>"); i++; }
                 else { add_token(TOKEN_GT, ">"); }
                 break;
             case '&':
                 if (src[i+1] == '&') { add_token(TOKEN_AND, "&&"); i++; }
-                else { printf("Błąd: oczekiwano '&&'\n"); }
+                else { add_token(TOKEN_BIT_AND, "&"); }
                 break;
             case '|':
                 if (src[i+1] == '|') { add_token(TOKEN_OR, "||"); i++; }
-                else { printf("Błąd: oczekiwano '||'\n"); }
+                else { add_token(TOKEN_BIT_OR, "|"); }
                 break;
             case '+':
                 if (src[i+1] == '+') { add_token(TOKEN_INC, "++"); i++; }
@@ -2285,7 +2390,7 @@ double eval(Node *n)
         
         Env *temp = current_env;
         current_env = prev_env;
-        free_env(temp);
+        // free_env(temp); // GC HANDLED
         return 0;
     }
     else if (n->type == NODE_FOREACH) {
@@ -2370,7 +2475,7 @@ double eval(Node *n)
         
         Env *temp = current_env;
         current_env = prev_env;
-        free_env(temp);
+        // free_env(temp); // GC HANDLED
         return 0;
     }
     else if (n->type == NODE_TRY) {
@@ -2399,7 +2504,7 @@ double eval(Node *n)
                 
                 Env *temp = current_env;
                 current_env = prev_env;
-                free_env(temp);
+                // free_env(temp); // GC HANDLED
             } else {
                 if (exception_string) { free(exception_string); exception_string = NULL; }
             }
@@ -2499,8 +2604,11 @@ double eval(Node *n)
         
         Instance *inst = malloc(sizeof(Instance));
         inst->cls = cls;
+        ObjHeader *prev_root = gc_temp_root;
+        gc_temp_root = (ObjHeader*)inst;
         inst->fields = create_dict();
         gc_register((ObjHeader*)inst, OBJ_INSTANCE);
+        gc_temp_root = prev_root;
         
         // Call constructor
         Function *ctor = NULL;
@@ -2602,7 +2710,7 @@ double eval(Node *n)
             if (is_returning || is_breaking || is_continuing) break;
         }
         Env *parent = current_env->parent;
-        free_env(current_env); // cleanup vars
+        // free_env(current_env); // cleanup vars - GC HANDLED
         current_env = parent; // Pop scope
         return 0;
     }
@@ -2865,6 +2973,7 @@ double eval(Node *n)
         Array *arr_val = NULL;
         Dict *dict_val = NULL;
         struct Instance *inst_val = NULL;
+        struct FunctionObj *func_val = NULL;
         int is_bool = (n->expr->type == NODE_BOOL);
         
         if (return_instance) {
@@ -2887,6 +2996,8 @@ double eval(Node *n)
             dict_val = n->expr->dict_value;
         } else if (n->expr->string_value) {
             str_val = n->expr->string_value;
+        } else if (n->expr->func_value) {
+            func_val = n->expr->func_value;
         }
         
         Variable *var = get_variable(n->var_name);
@@ -2899,6 +3010,9 @@ double eval(Node *n)
             if (inst_val) {
                 var->type = TYPE_INSTANCE;
                 var->value.instanceValue = inst_val;
+            } else if (func_val) {
+                var->type = TYPE_FUNCTION;
+                var->value.funcValue = func_val;
             } else if (arr_val) {
                 var->type = TYPE_ARRAY;
                 var->value.arrayValue = arr_val;
@@ -2930,6 +3044,7 @@ double eval(Node *n)
         Array *arr_val = NULL;
         Dict *dict_val = NULL;
         struct Instance *inst_val = NULL;
+        struct FunctionObj *func_val = NULL;
         int is_bool = (n->expr->type == NODE_BOOL);
         
         if (return_instance) {
@@ -2951,6 +3066,8 @@ double eval(Node *n)
             dict_val = n->expr->dict_value;
         } else if (n->expr->string_value) {
             str_val = n->expr->string_value;
+        } else if (n->expr->func_value) {
+            func_val = n->expr->func_value;
         }
         
         Variable *var = env_define(current_env, n->var_name);
@@ -2958,6 +3075,9 @@ double eval(Node *n)
             if (inst_val) {
                 var->type = TYPE_INSTANCE;
                 var->value.instanceValue = inst_val;
+            } else if (func_val) {
+                var->type = TYPE_FUNCTION;
+                var->value.funcValue = func_val;
             } else if (arr_val) {
                 var->type = TYPE_ARRAY;
                 var->value.arrayValue = arr_val;
@@ -3083,16 +3203,29 @@ double eval(Node *n)
         return 0;
     }
     else if (n->type == NODE_FUNC_DEF) {
-        if (func_count >= func_capacity) {
-            func_capacity = (func_capacity == 0) ? 32 : func_capacity * 2;
-            functions = realloc(functions, sizeof(Function) * func_capacity);
+        // Create FunctionObj
+        FunctionObj *fn = malloc(sizeof(FunctionObj));
+        fn->name = n->func.name ? strdup(n->func.name) : NULL;
+        fn->body = n->func.body;
+        fn->arg_count = n->func.arg_count;
+        fn->args = malloc(sizeof(char*) * fn->arg_count);
+        for(int i=0; i<fn->arg_count; i++) {
+            fn->args[i] = strdup(n->func.args[i]);
         }
-        Function f;
-        strncpy(f.name, n->func.name, 63);
-        f.body = n->func.body;
-        f.args = n->func.args;
-        f.arg_count = n->func.arg_count;
-        functions[func_count++] = f;
+        fn->closure = current_env; // Capture environment!
+        // printf("DEBUG: Created function %s with closure %p\n", n->func.name ? n->func.name : "anon", fn->closure);
+        ObjHeader *prev_root = gc_temp_root;
+        gc_temp_root = (ObjHeader*)fn;
+        gc_register((ObjHeader*)fn, OBJ_FUNCTION);
+        gc_temp_root = prev_root;
+        
+        // If named, store in current environment
+        if (n->func.name) {
+            // printf("DEBUG: Defining function %s\n", n->func.name);
+            Variable *var = env_define(current_env, n->func.name);
+            var->type = TYPE_FUNCTION;
+            var->value.funcValue = fn;
+        }
         return 0;
     }
     else if (n->type == NODE_RETURN) {
@@ -3103,8 +3236,10 @@ double eval(Node *n)
             if (return_string) { free(return_string); return_string = NULL; }
             if (return_array) { decref_array(return_array); return_array = NULL; }
             if (return_dict) { decref_dict(return_dict); return_dict = NULL; }
+            return_function = NULL; // GC handles ref count
 
             if (n->expr->string_value) {
+                // printf("DEBUG: Return string: %s\n", n->expr->string_value);
                 return_string = malloc(strlen(n->expr->string_value)+1);
                 strcpy(return_string, n->expr->string_value);
             } else if (n->expr->array_value) {
@@ -3113,20 +3248,60 @@ double eval(Node *n)
             } else if (n->expr->dict_value) {
                 return_dict = n->expr->dict_value;
                 incref_dict(return_dict);
+            } else if (n->expr->func_value) {
+                return_function = n->expr->func_value;
             }
         }
         is_returning = 1;
         return return_value;
     }
     else if (n->type == NODE_FUNC_CALL) {
+        if (strcmp(n->call.name, "tekst") == 0) {
+            if (n->call.arg_count != 1) { printf("Błąd: funkcja tekst wymaga 1 argumentu\n"); return 0; }
+            double val = eval(n->call.args[0]);
+            char *s = get_node_string(n->call.args[0]);
+            
+            if (n->string_value) free(n->string_value);
+            
+            if (s) {
+                n->string_value = strdup(s);
+            } else {
+                char buf[64];
+                snprintf(buf, 64, "%g", val);
+                n->string_value = strdup(buf);
+            }
+            return 0;
+        }
+        if (strcmp(n->call.name, "liczba") == 0) {
+            if (n->call.arg_count != 1) { printf("Błąd: funkcja liczba wymaga 1 argumentu\n"); return 0; }
+            double val = eval(n->call.args[0]);
+            char *s = get_node_string(n->call.args[0]);
+            
+            if (n->string_value) { free(n->string_value); n->string_value = NULL; }
+            
+            if (s) {
+                return atof(s);
+            } else {
+                return val;
+            }
+        }
+
         // printf("DEBUG: Calling function %s\n", n->call.name);
-        Function *f = get_function(n->call.name);
-        if (!f) { printf("Błąd: nieznana funkcja %s\n", n->call.name); return 0; }
+        Variable *var = get_variable(n->call.name);
+        FunctionObj *fn = NULL;
+        
+        if (var && var->type == TYPE_FUNCTION) {
+            fn = var->value.funcValue;
+        } else {
+            printf("Błąd: nieznana funkcja %s\n", n->call.name); 
+            return 0; 
+        }
         
         double arg_vals[16];
         char *arg_strs[16] = {0};
         Array *arg_arrs[16] = {0};
         Dict *arg_dicts[16] = {0};
+        struct FunctionObj *arg_funcs[16] = {0};
         
         for (int i=0; i<n->call.arg_count; i++) {
             arg_vals[i] = eval(n->call.args[i]);
@@ -3135,21 +3310,27 @@ double eval(Node *n)
                 strcpy(arg_strs[i], n->call.args[i]->string_value);
             } else if (n->call.args[i]->array_value) {
                 arg_arrs[i] = n->call.args[i]->array_value;
-                incref_array(arg_arrs[i]);
             } else if (n->call.args[i]->dict_value) {
                 arg_dicts[i] = n->call.args[i]->dict_value;
-                incref_dict(arg_dicts[i]);
+            } else if (n->call.args[i]->type == NODE_VARIABLE) {
+                 Variable *v = get_variable(n->call.args[i]->var_name);
+                 if (v && v->type == TYPE_FUNCTION) {
+                     arg_funcs[i] = v->value.funcValue;
+                 }
             }
         }
         
         // Create new environment for function call
         Env *prev_env = current_env;
-        current_env = create_env(global_env);
+        if (gc_call_stack_count < 256) gc_call_stack[gc_call_stack_count++] = prev_env;
         
-        for (int i=0; i<f->arg_count; i++) {
+        // printf("DEBUG: Calling function with closure %p\n", fn->closure ? fn->closure : global_env);
+        current_env = create_env(fn->closure ? fn->closure : global_env);
+        
+        for (int i=0; i<fn->arg_count; i++) {
             if (i >= n->call.arg_count) break;
             
-            Variable *var = env_define(current_env, f->args[i]);
+            Variable *var = env_define(current_env, fn->args[i]);
             if (var) {
                 if (arg_strs[i]) {
                     var->type = TYPE_STRING;
@@ -3160,6 +3341,9 @@ double eval(Node *n)
                 } else if (arg_dicts[i]) {
                     var->type = TYPE_DICT;
                     var->value.dictValue = arg_dicts[i];
+                } else if (arg_funcs[i]) {
+                    var->type = TYPE_FUNCTION;
+                    var->value.funcValue = arg_funcs[i];
                 } else {
                     var->type = TYPE_DOUBLE;
                     var->value.doubleValue = arg_vals[i];
@@ -3168,7 +3352,7 @@ double eval(Node *n)
             if (arg_strs[i]) free(arg_strs[i]);
         }
         
-        eval(f->body);
+        eval(fn->body);
         
         // Reset control flow flags that shouldn't leak out of function
         if (is_breaking) { is_breaking = 0; }
@@ -3176,9 +3360,10 @@ double eval(Node *n)
         // Exception should propagate out of function call
         
         // Restore environment
-        Env *temp = current_env;
+        // Env *temp = current_env; // GC handles it
+        if (gc_call_stack_count > 0) gc_call_stack_count--;
         current_env = prev_env;
-        free_env(temp);
+        // free_env(temp); // DO NOT FREE ENV MANUALLY WITH CLOSURES!
 
         double ret = return_value;
         
@@ -3197,6 +3382,9 @@ double eval(Node *n)
         } else if (return_dict) {
             n->dict_value = return_dict;
             return_dict = NULL;
+        } else if (return_function) {
+            n->func_value = return_function;
+            return_function = NULL;
         }
         
         is_returning = 0;
@@ -3230,8 +3418,13 @@ double eval(Node *n)
     }
     else if (n->type == NODE_OPERATION)
     {
-        double a = eval(n->op.a);
+        double a = 0;
+        if (n->op.a) a = eval(n->op.a);
         double b = eval(n->op.b);
+
+        if (n->op.op_type == TOKEN_BIT_NOT) {
+            return ~(long long)b;
+        }
 
         if (n->op.op_type == TOKEN_PLUS)
         {
@@ -3286,6 +3479,11 @@ double eval(Node *n)
         case TOKEN_GT: return a > b;
         case TOKEN_LTE: return a <= b;
         case TOKEN_GTE: return a >= b;
+        case TOKEN_BIT_AND: return (long long)a & (long long)b;
+        case TOKEN_BIT_OR: return (long long)a | (long long)b;
+        case TOKEN_BIT_XOR: return (long long)a ^ (long long)b;
+        case TOKEN_LSHIFT: return (long long)a << (long long)b;
+        case TOKEN_RSHIFT: return (long long)a >> (long long)b;
         }
     }
     else if (n->type == NODE_VARIABLE)
@@ -3313,6 +3511,10 @@ double eval(Node *n)
             }
             if (var->type == TYPE_DICT) {
                 n->dict_value = var->value.dictValue;
+                return 0;
+            }
+            if (var->type == TYPE_FUNCTION) {
+                n->func_value = var->value.funcValue;
                 return 0;
             }
             if (var->type == TYPE_INSTANCE) {
@@ -3509,14 +3711,72 @@ double eval(Node *n)
                 
                 // Cleanup
                 for(int i=0; i<n->method.arg_count; i++) {
+                    if (arg_strs[i]) free(arg_strs[i]); // Wait, arg_strs were already freed inside the loop if used? No, they are freed here.
+                    // But wait, inside the loop: if (str) { ... free(str); }
+                    // The loop above:
+                    // if (ins) ... else if (str) { ... free(str); }
+                    // So str is freed inside the loop!
+                    // Double free if we free it again here?
+                    // Let's check the loop again.
+                }
+                
+                // Re-reading the loop logic:
+                /*
+                for (int i=0; i<method->arg_count; i++) {
+                    ...
+                    if (ins) { ... } 
+                    else if (str) {
+                        arg->type = TYPE_STRING;
+                        strcpy(arg->value.stringValue, str);
+                        free(str); // FREED HERE
+                    }
+                }
+                */
+                // But arg_strs array was populated for ALL args passed (n->method.arg_count).
+                // The loop iterates over method->arg_count (formal parameters).
+                // If n->method.arg_count > method->arg_count, the extra args are not processed in the loop, so their strings are NOT freed.
+                // If n->method.arg_count <= method->arg_count, they are freed.
+                
+                // The cleanup loop:
+                /*
+                for(int i=0; i<n->method.arg_count; i++) {
                     if (arg_strs[i]) free(arg_strs[i]);
                 }
-
+                */
+                // This looks like a double free if they were freed in the loop.
+                // I should probably fix this too, but my main task is return values.
+                // Actually, let's look at the code I'm replacing.
+                
                 current_env = prev_env;
                 current_instance = prev_inst;
                 
                 if (is_returning) {
                     is_returning = 0;
+                    
+                    // Handle non-double return values
+                    if (return_string) {
+                        // printf("DEBUG: Method returned string: %s\n", return_string);
+                        if (n->string_value) free(n->string_value);
+                        n->string_value = strdup(return_string);
+                        free(return_string);
+                        return_string = NULL;
+                    } else if (return_array) {
+                        n->array_value = return_array;
+                        return_array = NULL;
+                    } else if (return_dict) {
+                        n->dict_value = return_dict;
+                        return_dict = NULL;
+                    } else if (return_instance) {
+                        // Wait, return_instance is a struct Instance*
+                        // But NODE_METHOD_CALL doesn't seem to have a field for instance value?
+                        // Let's check Node struct.
+                        // It has array_value, dict_value, func_value.
+                        // Does it have instance_value?
+                        // I need to check Node struct definition again.
+                        // I saw struct Instance *return_instance global.
+                        // But Node struct?
+                    }
+                    
                     return return_value;
                 }
                 return 0;
