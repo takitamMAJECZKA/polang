@@ -1,0 +1,16 @@
+INSTRUKCJA INSTALACJI JEZYKA BENZIN
+=====================================
+
+1. Kliknij prawym przyciskiem myszy na plik "zainstaluj_mnie.bat".
+2. Wybierz opcję "Uruchom jako administrator" (Run as administrator).
+3. Postępuj zgodnie z instrukcjami na ekranie.
+
+Po instalacji:
+1. Otwórz nowe okno konsoli (CMD lub PowerShell).
+2. Wpisz: benzin --help (lub po prostu benzin nazwa_pliku.bzn).
+
+Przykład użycia:
+   benzin moj_program.bzn
+
+Wymagania:
+- System Windows 10/11

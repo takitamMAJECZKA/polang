@@ -222,6 +222,7 @@ typedef enum
     TOKEN_BIT_OR,     // |
     TOKEN_BIT_XOR,    // ^
     TOKEN_BIT_NOT,    // ~
+    TOKEN_NOT,        // !
     TOKEN_LSHIFT,     // <<
     TOKEN_RSHIFT,     // >>
     TOKEN_BREAK,
@@ -884,7 +885,7 @@ Node *parse_expr_bp(int min_bp)
     Node *left = NULL;
 
     // Prefix operators
-    if (tokens[pos].type == TOKEN_MINUS || tokens[pos].type == TOKEN_BIT_NOT) {
+    if (tokens[pos].type == TOKEN_MINUS || tokens[pos].type == TOKEN_BIT_NOT || tokens[pos].type == TOKEN_NOT) {
         int op = tokens[pos].type;
         pos++;
         Node *operand = parse_expr_bp(90); // High precedence
@@ -892,7 +893,7 @@ Node *parse_expr_bp(int min_bp)
         if (op == TOKEN_MINUS) {
             left = make_op(TOKEN_MINUS, make_number(0), operand);
         } else {
-            // Unary bitwise NOT
+            // Unary bitwise NOT or logical NOT
             left = alloc_node();
             left->type = NODE_OPERATION;
             left->op.op_type = op;
@@ -1417,6 +1418,11 @@ Node *parse_stmt()
                 pos++; continue;
             }
             
+            // Fix for fields: if no ( and no { and no IDENT (args), assume field
+            if (tokens[pos].type != TOKEN_LPAREN && tokens[pos].type != TOKEN_LBRACE && tokens[pos].type != TOKEN_IDENT) {
+                 continue;
+            }
+
             Node *method = alloc_node();
             method->type = NODE_FUNC_DEF;
             method->func.name = strdup(method_name);
@@ -2279,7 +2285,7 @@ void lex(const char *src)
                 break;
             case '!':
                 if (src[i+1] == '=') { add_token(TOKEN_NEQ, "!=", current_line); i++; }
-                else { printf("Błąd: nieoczekiwany znak '!'\n"); }
+                else { add_token(TOKEN_NOT, "!", current_line); }
                 break;
             case '<':
                 if (src[i+1] == '=') { add_token(TOKEN_LTE, "<=", current_line); i++; }
@@ -3457,6 +3463,9 @@ double eval(Node *n)
         if (n->op.op_type == TOKEN_BIT_NOT) {
             return ~(long long)b;
         }
+        if (n->op.op_type == TOKEN_NOT) {
+            return (b == 0);
+        }
 
         if (n->op.op_type == TOKEN_PLUS)
         {
@@ -3906,6 +3915,9 @@ double eval(Node *n)
                     }
                 }
                 return 0;
+            }
+            if (strcmp(n->method.name, "dlugosc") == 0) {
+                return (double)var->value.arrayValue->count;
             }
             if (strcmp(n->method.name, "usun") == 0) {
                 // Pop or remove at index? Let's say usun(index)

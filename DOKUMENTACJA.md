@@ -54,6 +54,17 @@ zmienna prawda_falsz = prawda;  # lub falsz
 zmienna pustka = nic;
 ```
 
+### Zmiana wartości zmiennej
+Gdy zmienna jest już zadeklarowana (użyto słowa `zmienna`), możesz zmieniać jej wartość bez ponownego używania tego słowa.
+
+```mylang
+zmienna x = 5;
+pisz x; # 5
+
+x = 10; # Zmiana wartości
+pisz x; # 10
+```
+
 ### Interpolacja ciągów znaków
 Możesz wstawiać wartości zmiennych bezpośrednio do tekstu używając `${...}`.
 
@@ -88,6 +99,19 @@ pisz "X wynosi ${x}, a x+1 to ${x+1}";
 | `>=` | Większe lub równe |
 | `&&` lub `oraz` | Koniunkcja logiczna (AND) |
 | `||` lub `albo` | Alternatywa logiczna (OR) |
+| `!` | Negacja logiczna (NOT) |
+
+### Negacja (`!`)
+Znak `!` odwraca wartość logiczną. Prawda staje się fałszem, a fałsz prawdą.
+
+```mylang
+zmienna x = prawda;
+pisz !x; # Wypisze: falsz
+
+jezeli (!x) {
+    pisz "To się nie wykona";
+}
+```
 
 ### Bitowe
 | Operator | Opis |
@@ -127,6 +151,17 @@ dla (zmienna i = 0; i < 10; i++) {
     jezeli (i == 5) { pomin; } # continue
     jezeli (i == 8) { zlam; }  # break
     pisz i;
+}
+```
+
+### Pętla `dla` (Foreach)
+Możesz łatwo iterować po elementach tablicy używając składni `dla ... w ...`.
+
+```mylang
+zmienna owoce = ["Jablko", "Banan", "Gruszka"];
+
+dla (owoc w owoce) {
+    pisz "Lubie: " + owoc;
 }
 ```
 

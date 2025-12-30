@@ -1,0 +1,17 @@
+zmienna x = falsz
+jezeli (!x) {
+    pisz "Negacja dziala!"
+} inaczej {
+    pisz "Negacja NIE dziala!"
+}
+
+zmienna y = 10
+pisz "y przed zmiana: " + tekst(y)
+y = 20
+pisz "y po zmianie: " + tekst(y)
+
+jezeli (y == 20) {
+    pisz "Zmiana wartosci dziala!"
+} inaczej {
+    pisz "Zmiana wartosci NIE dziala!"
+}
