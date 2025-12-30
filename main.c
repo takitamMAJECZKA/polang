@@ -7,6 +7,10 @@
 #include <time.h>
 #include <stdarg.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -4290,9 +4294,50 @@ void repl() {
     }
 }
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
+// ... existing code ...
+
+void run_interpreter(const char *src) {
+    // Reset global state
+    if (tokens) { free(tokens); tokens = NULL; }
+    token_count = 0;
+    token_capacity = 0;
+    pos = 0;
+    
+    lex(src);
+    
+    // Reset environment
+    // Note: In a real app we might want to free the old env to avoid leaks
+    global_env = create_env(NULL);
+    current_env = global_env;
+
+    // Define global constants
+    Variable *pi_var = env_define(global_env, "pi");
+    if (pi_var) {
+        pi_var->type = TYPE_DOUBLE;
+        pi_var->value.doubleValue = 3.14159265358979323846;
+    }
+
+    parse();
+}
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+void run_code(const char *code) {
+    run_interpreter(code);
+}
+#endif
+
 int main(int argc, char *argv[])
 {
+#ifdef __EMSCRIPTEN__
+    return 0;
+#endif
     // printf("DEBUG: Main start\n");
+
     // fflush(stdout);
     if (argc < 2)
     {
@@ -4322,27 +4367,7 @@ int main(int argc, char *argv[])
     src[fsize] = 0;
     fclose(file);
 
-    lex(src);
-
-    // printf("DEBUG: File size: %ld\n", fsize);
-    // printf("DEBUG: Token count: %d\n", token_count);
-    // fflush(stdout);
-    global_env = create_env(NULL);
-    current_env = global_env;
-
-    // Define global constants
-    Variable *pi_var = env_define(global_env, "pi");
-    if (pi_var) {
-        pi_var->type = TYPE_DOUBLE;
-        pi_var->value.doubleValue = 3.14159265358979323846;
-    }
-
-    // for (int i = 0; i < token_count; i++)
-    // {
-    //     printf("Token %d: typ=%d, tekst='%s'\n", i, tokens[i].type, tokens[i].text);
-    // }
-
-    parse();
+    run_interpreter(src);
     
     // Print global variables only if not returning from main (which shouldn't happen)
     // Actually, let's comment this out to avoid cluttering output of scripts
