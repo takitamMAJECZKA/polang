@@ -16,6 +16,7 @@
   "repository": {
     "comments": {
       "patterns": [
+        { "name": "comment.line.number-sign.benzin", "match": "#.*$" },
         { "name": "comment.line.double-slash.benzin", "match": "//.*$" },
         { "name": "comment.block.benzin", "begin": "/\\*", "end": "\\*/" }
       ]
@@ -67,7 +68,7 @@
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.benzin", "match": "\\b(jezeli|inaczej|wkolko|dla|w|wybor|przypadek|domyslnie|sprobuj|zlap|rzuc|zlam|pomin|zwroc|import)\\b" },
+        { "name": "keyword.control.benzin", "match": "\\b(jezeli|jeżeli|inaczej|wprzeciwnymrazie|wkolko|wkółko|dla|w|wybor|przypadek|domyslnie|sprobuj|zlap|rzuc|zlam|pomin|pomiń|zwroc|zwróć|import)\\b" },
         { "name": "storage.type.benzin", "match": "\\b(zmienna|klasa|funkcja|konstruktor)\\b" },
         { "name": "storage.modifier.benzin", "match": "\\b(statyczna|prywatna|publiczna|dziedziczy)\\b" },
         { "name": "keyword.operator.new.benzin", "match": "\\b(nowy)\\b" }
@@ -75,8 +76,8 @@
     },
     "constants": {
       "patterns": [
-        { "name": "constant.language.boolean.benzin", "match": "\\b(prawda|falsz)\\b" },
-        { "name": "constant.language.null.benzin", "match": "\\b(nic)\\b" },
+        { "name": "constant.language.boolean.benzin", "match": "\\b(prawda|falsz|fałsz)\\b" },
+        { "name": "constant.language.null.benzin", "match": "\\b(nic|null)\\b" },
         { "name": "variable.language.this.benzin", "match": "\\b(to)\\b" }
       ]
     },
