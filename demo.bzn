@@ -1,0 +1,52 @@
+zmienna x = 42
+zmienna s = "Benzin"
+zmienna b = prawda
+
+pisz x + 10
+pisz s + " Lang"
+
+jezeli (x > 0) { pisz "Dodatnia" } inaczej { pisz "Ujemna" }
+
+zmienna i = 0
+wkolko (i < 3) { pisz i; i++ }
+
+dla (zmienna j=0; j<3; j++) { pisz j }
+
+wybor (x) {
+    przypadek 42: pisz "To sens zycia"
+    domyslnie: pisz "Inna liczba"
+}
+
+funkcja suma(a, b) { zwroc a + b }
+pisz suma(5, 5)
+
+zmienna tab = [1, 2, 3]
+tab.dodaj(4)
+pisz tab[0]
+pisz tab.dlugosc()
+
+zmienna mapa = {"klucz": "wartosc"}
+pisz mapa["klucz"]
+
+klasa Baza {
+    publiczna pole
+    konstruktor(val) { to.pole = val }
+    metoda() { pisz to.pole }
+}
+
+klasa Pochodna dziedziczy Baza {
+    metoda() { pisz "Nadpisana: " + tekst(to.pole) }
+}
+
+zmienna obj = nowy Pochodna(123)
+obj.metoda()
+
+sprobuj {
+    rzuc "Awaria"
+} zlap (e) {
+    pisz "Zlapano: " + e
+}
+
+pisz 5 & 3
+pisz 5 | 3
+pisz !falsz

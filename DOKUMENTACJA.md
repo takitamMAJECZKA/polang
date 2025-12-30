@@ -181,7 +181,7 @@ Pary klucz-wartość. Klucze muszą być napisami.
 ```mylang
 zmienna osoba = {
     "imie": "Jan",
-    "wiek": 30
+    wiek: 30        # Klucz może być bez cudzysłowia
 };
 
 pisz osoba.imie;      # Dostęp przez kropkę

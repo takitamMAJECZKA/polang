@@ -111,3 +111,6 @@ pisz "Liczba jako tekst: " + tekst(num);
 pisz "Tekst jako liczba + 1: ${liczba(str) + 1} (oczekiwano 457)";
 
 pisz "=== TESTY ZAKOŃCZONE SUKCESEM ===";
+
+
+pisz ;"jebac"

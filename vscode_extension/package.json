@@ -1,0 +1,29 @@
+{
+  "name": "benzin-lang",
+  "displayName": "Benzin Language Support",
+  "description": "Podświetlanie składni dla języka Benzin (.bzn)",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "benzin",
+        "aliases": ["Benzin", "benzin"],
+        "extensions": [".bzn"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "benzin",
+        "scopeName": "source.benzin",
+        "path": "./syntaxes/benzin.tmLanguage.json"
+      }
+    ]
+  }
+}

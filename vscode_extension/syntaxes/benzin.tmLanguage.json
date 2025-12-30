@@ -1,0 +1,121 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Benzin",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#definitions" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#support" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#function-calls" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.benzin", "match": "//.*$" },
+        { "name": "comment.block.benzin", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "name": "string.quoted.double.benzin", "begin": "\"", "end": "\"", "patterns": [{ "name": "constant.character.escape.benzin", "match": "\\\\." }] },
+        { "name": "string.quoted.single.benzin", "begin": "'", "end": "'", "patterns": [{ "name": "constant.character.escape.benzin", "match": "\\\\." }] }
+      ]
+    },
+    "definitions": {
+      "patterns": [
+        {
+          "match": "\\b(zmienna)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.benzin" },
+            "2": { "name": "variable.other.readwrite.benzin" }
+          }
+        },
+        {
+          "match": "\\b(klasa)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.class.benzin" },
+            "2": { "name": "entity.name.type.class.benzin" }
+          }
+        },
+        {
+          "match": "\\b(funkcja)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.benzin" },
+            "2": { "name": "entity.name.function.benzin" }
+          }
+        },
+        {
+          "match": "\\b(nowy)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.operator.new.benzin" },
+            "2": { "name": "entity.name.type.class.benzin" }
+          }
+        },
+        {
+          "match": "\\b(dziedziczy)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.benzin" },
+            "2": { "name": "entity.name.type.class.benzin" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.benzin", "match": "\\b(jezeli|inaczej|wkolko|dla|w|wybor|przypadek|domyslnie|sprobuj|zlap|rzuc|zlam|pomin|zwroc|import)\\b" },
+        { "name": "storage.type.benzin", "match": "\\b(zmienna|klasa|funkcja|konstruktor)\\b" },
+        { "name": "storage.modifier.benzin", "match": "\\b(statyczna|prywatna|publiczna|dziedziczy)\\b" },
+        { "name": "keyword.operator.new.benzin", "match": "\\b(nowy)\\b" }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        { "name": "constant.language.boolean.benzin", "match": "\\b(prawda|falsz)\\b" },
+        { "name": "constant.language.null.benzin", "match": "\\b(nic)\\b" },
+        { "name": "variable.language.this.benzin", "match": "\\b(to)\\b" }
+      ]
+    },
+    "support": {
+      "patterns": [
+        { "name": "support.function.benzin", "match": "\\b(pisz|podaj|usun|tekst|liczba)\\b" }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.benzin",
+      "match": "\\b\\d+(\\.\\d+)?\\b"
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.logical.benzin", "match": "\\b(oraz|albo)\\b" },
+        { "name": "keyword.operator.comparison.benzin", "match": "\\b(rowne|nierowne)\\b" },
+        { "name": "keyword.operator.symbol.benzin", "match": "(\\+|\\-|\\*|\\/|%|\\^|&|\\||!|=|<|>)" }
+      ]
+    },
+    "function-calls": {
+        "patterns": [
+            {
+                "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
+                "name": "entity.name.function.benzin"
+            }
+        ]
+    },
+    "identifiers": {
+        "patterns": [
+            {
+                "match": "\\b[A-Z][a-zA-Z0-9_]*\\b",
+                "name": "entity.name.type.class.benzin"
+            },
+            {
+                "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
+                "name": "variable.other.benzin"
+            }
+        ]
+    }
+  },
+  "scopeName": "source.benzin"
+}

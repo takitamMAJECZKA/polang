@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <stdarg.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -59,6 +60,7 @@ struct Dict;
 typedef struct Node
 {
     NodeType type;
+    int line;          // Numer linii w kodzie źródłowym
     // Pola wspólne dla wszystkich typów
     double value;      // dla liczb i obliczonych wartości
     char *var_name;    // dla zmiennych
@@ -249,11 +251,36 @@ typedef struct
 {
     TokenType type;
     char text[64];
+    int line;
 } Token;
 
 Token *tokens = NULL;
 int token_count = 0;
 int token_capacity = 0;
+int pos = 0;
+
+void report_error(int line, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    fprintf(stderr, "Błąd w linii %d: ", line);
+    vfprintf(stderr, format, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+    exit(1);
+}
+
+Node *alloc_node() {
+    Node *n = calloc(1, sizeof(*n));
+    if (tokens && pos < token_count) {
+        n->line = tokens[pos].line;
+    } else if (tokens && token_count > 0) {
+        n->line = tokens[token_count - 1].line;
+    } else {
+        n->line = 1;
+    }
+    return n;
+}
+
 typedef enum {
     TYPE_DOUBLE,
     TYPE_STRING,
@@ -794,7 +821,7 @@ void free_env(Env *env) {
 
 Node *make_number(double value)
 {
-    Node *n = calloc(1, sizeof(Node));
+    Node *n = alloc_node();
     n->type = NODE_NUMBER;
     n->value = value;
     n->string_value = NULL;
@@ -803,7 +830,7 @@ Node *make_number(double value)
 
 Node *make_string(const char *text)
 {
-    Node *n = calloc(1, sizeof(Node));
+    Node *n = alloc_node();
     n->type = NODE_STRING;
     n->value = 0;
     n->var_name = NULL;
@@ -814,7 +841,7 @@ Node *make_string(const char *text)
 
 Node *make_op(int op_type, Node *a, Node *b)
 {
-    Node *n = calloc(1, sizeof(Node));
+    Node *n = alloc_node();
     n->type = NODE_OPERATION;
     n->op.op_type = op_type;
     n->op.a = a;
@@ -834,7 +861,6 @@ Node *add_strings(const char *a, const char *b)
     return result;
 }
 
-int pos = 0;
 
 // Binding powers dla operatorów
 int get_binding_power(Token t)
@@ -867,7 +893,7 @@ Node *parse_expr_bp(int min_bp)
             left = make_op(TOKEN_MINUS, make_number(0), operand);
         } else {
             // Unary bitwise NOT
-            left = calloc(1, sizeof(Node));
+            left = alloc_node();
             left->type = NODE_OPERATION;
             left->op.op_type = op;
             left->op.a = NULL; // Unary
@@ -887,7 +913,7 @@ Node *parse_expr_bp(int min_bp)
              char *func_name = tokens[pos].text;
              pos += 2; // pomiń nazwę i '('
              
-             Node *node = calloc(1, sizeof(Node));
+             Node *node = alloc_node();
              node->type = NODE_FUNC_CALL;
              node->call.name = malloc(strlen(func_name)+1);
              strcpy(node->call.name, func_name);
@@ -912,7 +938,7 @@ Node *parse_expr_bp(int min_bp)
             // i zmienne lokalne (lub forward references)
             char *var_name = tokens[pos].text;
             pos++;
-            left = calloc(1, sizeof(Node));
+            left = alloc_node();
             left->type = NODE_VARIABLE;
             // Bezpieczne kopiowanie nazwy zmiennej
             left->var_name = malloc(strlen(var_name) + 1);
@@ -1039,7 +1065,7 @@ Node *parse_expr_bp(int min_bp)
     else if (tokens[pos].type == TOKEN_TRUE)
     {
         pos++;
-        left = calloc(1, sizeof(Node));
+        left = alloc_node();
         left->type = NODE_BOOL;
         left->value = 1;
         left->string_value = NULL;
@@ -1047,7 +1073,7 @@ Node *parse_expr_bp(int min_bp)
     else if (tokens[pos].type == TOKEN_FALSE)
     {
         pos++;
-        left = calloc(1, sizeof(Node));
+        left = alloc_node();
         left->type = NODE_BOOL;
         left->value = 0;
         left->string_value = NULL;
@@ -1062,7 +1088,7 @@ Node *parse_expr_bp(int min_bp)
         char *class_name = tokens[pos].text;
         pos++;
         
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_NEW;
         node->new_inst.class_name = strdup(class_name);
         node->new_inst.args = malloc(sizeof(Node*) * 16);
@@ -1085,14 +1111,14 @@ Node *parse_expr_bp(int min_bp)
     else if (tokens[pos].type == TOKEN_THIS)
     {
         pos++;
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_THIS;
         left = node;
     }
     else if (tokens[pos].type == TOKEN_NULL)
     {
         pos++;
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_NULL;
         left = node;
     }
@@ -1100,7 +1126,7 @@ Node *parse_expr_bp(int min_bp)
     {
         // Array literal [a, b, c]
         pos++;
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_ARRAY_LITERAL;
         node->block.stmts = malloc(sizeof(Node*) * 64);
         node->block.count = 0;
@@ -1130,7 +1156,7 @@ Node *parse_expr_bp(int min_bp)
         // Here, let's assume if we are in parse_expr, we want a value, so it's a dict.
         
         pos++; // skip {
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_DICT_LITERAL;
         // We can reuse block.stmts to store keys and values alternately?
         // Or make a new structure. Let's reuse block.stmts but treat them as pairs.
@@ -1153,7 +1179,7 @@ Node *parse_expr_bp(int min_bp)
                 }
                 
                 if (tokens[pos].type == TOKEN_COLON) pos++;
-                else printf("Błąd: oczekiwano ':' po kluczu\n");
+                else report_error(tokens[pos].line, "oczekiwano ':' po kluczu");
                 
                 Node *val = parse_expr_bp(0);
                 
@@ -1165,7 +1191,7 @@ Node *parse_expr_bp(int min_bp)
             }
         }
         if (tokens[pos].type == TOKEN_RBRACE) pos++;
-        else printf("Błąd: oczekiwano '}'\n");
+        else report_error(tokens[pos].line, "oczekiwano '}'");
         
         left = node;
     }
@@ -1179,13 +1205,13 @@ Node *parse_expr_bp(int min_bp)
         }
         else
         {
-            printf("Błąd: brakujący ')'\n");
+            report_error(tokens[pos].line, "brakujący ')'");
             return NULL;
         }
     }
     else
     {
-        printf("Błąd składni: nieoczekiwany token '%s'\n", tokens[pos].text);
+        report_error(tokens[pos].line, "nieoczekiwany token '%s'", tokens[pos].text);
         return NULL;
     }
 
@@ -1202,7 +1228,7 @@ Node *parse_expr_bp(int min_bp)
                 if (tokens[pos].type == TOKEN_LPAREN) {
                     // Method call: obj.method(...)
                     pos++; // skip (
-                    Node *node = calloc(1, sizeof(Node));
+                    Node *node = alloc_node();
                     node->type = NODE_METHOD_CALL;
                     node->method.obj = left;
                     node->method.name = malloc(strlen(member_name) + 1);
@@ -1223,7 +1249,7 @@ Node *parse_expr_bp(int min_bp)
                     left = node;
                 } else {
                     // Member access: obj.field
-                    Node *node = calloc(1, sizeof(Node));
+                    Node *node = alloc_node();
                     node->type = NODE_MEMBER_ACCESS;
                     node->member.obj = left;
                     node->member.name = malloc(strlen(member_name) + 1);
@@ -1244,7 +1270,7 @@ Node *parse_expr_bp(int min_bp)
             if (tokens[pos].type == TOKEN_RBRACKET) pos++;
             else printf("Błąd: oczekiwano ']'\n");
             
-            Node *access = calloc(1, sizeof(Node));
+            Node *access = alloc_node();
             access->type = NODE_ARRAY_ACCESS;
             access->array_op.index = index;
             access->array_op.obj = left;
@@ -1276,7 +1302,7 @@ Node *parse_block() {
     }
     pos++; // pomiń {
     
-    Node *block = calloc(1, sizeof(Node));
+    Node *block = alloc_node();
     block->type = NODE_BLOCK;
     block->block.stmts = malloc(sizeof(Node*) * 128);
     block->block.count = 0;
@@ -1312,7 +1338,7 @@ Node *parse_stmt()
         pos++;
         if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
         
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_IMPORT;
         node->string_value = strdup(path);
         return node;
@@ -1321,7 +1347,7 @@ Node *parse_stmt()
     if (tokens[pos].type == TOKEN_BREAK) {
         pos++;
         if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_BREAK;
         return node;
     }
@@ -1329,7 +1355,7 @@ Node *parse_stmt()
     if (tokens[pos].type == TOKEN_CONTINUE) {
         pos++;
         if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_CONTINUE;
         return node;
     }
@@ -1361,7 +1387,7 @@ Node *parse_stmt()
         }
         pos++;
         
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_CLASS_DEF;
         node->class_def.name = strdup(name);
         if (parent) node->class_def.parent = strdup(parent);
@@ -1387,11 +1413,11 @@ Node *parse_stmt()
                 pos++;
             } else {
                 if (tokens[pos].type == TOKEN_RBRACE) break;
-                printf("Błąd: oczekiwano nazwy metody\n");
+                report_error(tokens[pos].line, "oczekiwano nazwy metody");
                 pos++; continue;
             }
             
-            Node *method = calloc(1, sizeof(Node));
+            Node *method = alloc_node();
             method->type = NODE_FUNC_DEF;
             method->func.name = strdup(method_name);
             method->func.args = malloc(sizeof(char*) * 16);
@@ -1441,7 +1467,7 @@ Node *parse_stmt()
                     Node *expr = parse_expr_bp(0);
                     if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
                     
-                    Node *node = calloc(1, sizeof(Node));
+                    Node *node = alloc_node();
                     node->type = NODE_VAR_DECL;
                     node->var_name = malloc(strlen(var_name) + 1);
                     strcpy(node->var_name, var_name);
@@ -1456,7 +1482,7 @@ Node *parse_stmt()
             Node *expr = parse_expr_bp(0);
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_PRINT;
             node->expr = expr;
             return node;
@@ -1476,7 +1502,7 @@ Node *parse_stmt()
                 else_body = parse_stmt();
             }
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_IF;
             node->flow.cond = cond;
             node->flow.body = body;
@@ -1492,7 +1518,7 @@ Node *parse_stmt()
             
             Node *body = parse_stmt();
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_WHILE;
             node->flow.cond = cond;
             node->flow.body = body;
@@ -1530,19 +1556,19 @@ Node *parse_stmt()
             Node *body = parse_stmt();
             
             // Construct AST
-            Node *loop_body = calloc(1, sizeof(Node));
+            Node *loop_body = alloc_node();
             loop_body->type = NODE_BLOCK;
             loop_body->block.stmts = malloc(sizeof(Node*) * 2);
             loop_body->block.count = 2;
             loop_body->block.stmts[0] = body;
             loop_body->block.stmts[1] = step;
             
-            Node *loop = calloc(1, sizeof(Node));
+            Node *loop = alloc_node();
             loop->type = NODE_WHILE;
             loop->flow.cond = cond;
             loop->flow.body = loop_body;
             
-            Node *block = calloc(1, sizeof(Node));
+            Node *block = alloc_node();
             block->type = NODE_BLOCK;
             block->block.stmts = malloc(sizeof(Node*) * 2);
             block->block.count = 2;
@@ -1560,7 +1586,7 @@ Node *parse_stmt()
             }
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_RETURN;
             node->expr = expr;
             return node;
@@ -1572,7 +1598,7 @@ Node *parse_stmt()
                 char *func_name = tokens[pos].text;
                 pos++;
                 
-                Node *node = calloc(1, sizeof(Node));
+                Node *node = alloc_node();
                 node->type = NODE_FUNC_DEF;
                 node->func.name = malloc(strlen(func_name) + 1);
                 strcpy(node->func.name, func_name);
@@ -1612,7 +1638,7 @@ Node *parse_stmt()
         {
             pos++;
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_BREAK;
             return node;
         }
@@ -1620,7 +1646,7 @@ Node *parse_stmt()
         {
             pos++;
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_CONTINUE;
             return node;
         }
@@ -1635,7 +1661,7 @@ Node *parse_stmt()
             pos++;
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_INPUT;
             node->var_name = strdup(var_name);
             return node;
@@ -1664,7 +1690,7 @@ Node *parse_stmt()
             catch_body = parse_stmt();
         }
         
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_TRY;
         node->try_catch.try_body = try_body;
         node->try_catch.catch_body = catch_body;
@@ -1677,7 +1703,7 @@ Node *parse_stmt()
         Node *expr = parse_expr_bp(0);
         if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
         
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_THROW;
         node->expr = expr;
         return node;
@@ -1702,7 +1728,7 @@ Node *parse_stmt()
         }
         pos++;
 
-        Node *node = calloc(1, sizeof(Node));
+        Node *node = alloc_node();
         node->type = NODE_SWITCH;
         node->switch_stmt.expr = expr;
         node->switch_stmt.cases = malloc(sizeof(Node*) * 32);
@@ -1720,7 +1746,7 @@ Node *parse_stmt()
                 pos++;
                 
                 // Parse statements until next case/default/end
-                Node *block = calloc(1, sizeof(Node));
+                Node *block = alloc_node();
                 block->type = NODE_BLOCK;
                 block->block.stmts = malloc(sizeof(Node*) * 32);
                 block->block.count = 0;
@@ -1731,7 +1757,7 @@ Node *parse_stmt()
                     if (stmt) block->block.stmts[block->block.count++] = stmt;
                 }
                 
-                Node *case_node = calloc(1, sizeof(Node));
+                Node *case_node = alloc_node();
                 case_node->type = NODE_CASE;
                 case_node->case_stmt.value = val;
                 case_node->case_stmt.body = block;
@@ -1745,7 +1771,7 @@ Node *parse_stmt()
                 }
                 pos++;
                 
-                Node *block = calloc(1, sizeof(Node));
+                Node *block = alloc_node();
                 block->type = NODE_BLOCK;
                 block->block.stmts = malloc(sizeof(Node*) * 32);
                 block->block.count = 0;
@@ -1789,7 +1815,7 @@ Node *parse_stmt()
             
             Node *body = parse_stmt();
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_FOREACH;
             node->foreach_loop.var_name = var_name;
             node->foreach_loop.collection = collection;
@@ -1862,7 +1888,7 @@ Node *parse_stmt()
                         char *var_name = tokens[pos].text;
                         pos += 2;
                         Node *expr = parse_expr_bp(0);
-                        Node *node = calloc(1, sizeof(Node));
+                        Node *node = alloc_node();
                         node->type = NODE_ASSIGN;
                         node->var_name = strdup(var_name);
                         node->expr = expr;
@@ -1871,13 +1897,13 @@ Node *parse_stmt()
                         char *var_name = tokens[pos].text;
                         int op_type = tokens[pos+1].type;
                         pos += 2;
-                        Node *var_node = calloc(1, sizeof(Node));
+                        Node *var_node = alloc_node();
                         var_node->type = NODE_VARIABLE;
                         var_node->var_name = strdup(var_name);
                         Node *one = make_number(1);
                         int bin_op = (op_type == TOKEN_INC) ? TOKEN_PLUS : TOKEN_MINUS;
                         Node *op_node = make_op(bin_op, var_node, one);
-                        Node *node = calloc(1, sizeof(Node));
+                        Node *node = alloc_node();
                         node->type = NODE_ASSIGN;
                         node->var_name = strdup(var_name);
                         node->expr = op_node;
@@ -1888,7 +1914,7 @@ Node *parse_stmt()
                         int op_type = tokens[pos+1].type;
                         pos += 2;
                         Node *expr = parse_expr_bp(0);
-                        Node *var_node = calloc(1, sizeof(Node));
+                        Node *var_node = alloc_node();
                         var_node->type = NODE_VARIABLE;
                         var_node->var_name = strdup(var_name);
                         int bin_op = 0;
@@ -1898,7 +1924,7 @@ Node *parse_stmt()
                         else if (op_type == TOKEN_DIV_ASSIGN) bin_op = TOKEN_SLASH;
                         else if (op_type == TOKEN_MOD_ASSIGN) bin_op = TOKEN_MOD;
                         Node *op_node = make_op(bin_op, var_node, expr);
-                        Node *node = calloc(1, sizeof(Node));
+                        Node *node = alloc_node();
                         node->type = NODE_ASSIGN;
                         node->var_name = strdup(var_name);
                         node->expr = op_node;
@@ -1912,7 +1938,7 @@ Node *parse_stmt()
             
             Node *body = parse_stmt();
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_FOR;
             node->for_loop.init = init;
             node->for_loop.cond = cond;
@@ -1932,7 +1958,7 @@ Node *parse_stmt()
             Node *expr = parse_expr_bp(0);
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_ASSIGN;
             node->var_name = malloc(strlen(var_name)+1);
             strcpy(node->var_name, var_name);
@@ -1949,7 +1975,7 @@ Node *parse_stmt()
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
             
             // Desugar to: var = var op expr
-            Node *var_node = calloc(1, sizeof(Node));
+            Node *var_node = alloc_node();
             var_node->type = NODE_VARIABLE;
             var_node->var_name = strdup(var_name);
             
@@ -1962,7 +1988,7 @@ Node *parse_stmt()
             
             Node *op_node = make_op(bin_op, var_node, expr);
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_ASSIGN;
             node->var_name = strdup(var_name);
             node->expr = op_node;
@@ -1975,7 +2001,7 @@ Node *parse_stmt()
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
             
             // Desugar to: var = var + 1 (or - 1)
-            Node *var_node = calloc(1, sizeof(Node));
+            Node *var_node = alloc_node();
             var_node->type = NODE_VARIABLE;
             var_node->var_name = strdup(var_name);
             
@@ -1984,7 +2010,7 @@ Node *parse_stmt()
             
             Node *op_node = make_op(bin_op, var_node, one);
             
-            Node *node = calloc(1, sizeof(Node));
+            Node *node = alloc_node();
             node->type = NODE_ASSIGN;
             node->var_name = strdup(var_name);
             node->expr = op_node;
@@ -2003,7 +2029,7 @@ Node *parse_stmt()
                 Node *val = parse_expr_bp(0);
                 if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
                 
-                Node *node = calloc(1, sizeof(Node));
+                Node *node = alloc_node();
                 node->type = NODE_ARRAY_ASSIGN;
                 node->array_op.name = strdup(var_name);
                 node->array_op.index = index;
@@ -2021,7 +2047,7 @@ Node *parse_stmt()
             if (tokens[pos].type == TOKEN_SEMICOLON) pos++;
             
             if (expr->type == NODE_MEMBER_ACCESS) {
-                Node *node = calloc(1, sizeof(Node));
+                Node *node = alloc_node();
                 node->type = NODE_MEMBER_ASSIGN;
                 node->member.obj = expr->member.obj;
                 node->member.name = expr->member.name;
@@ -2030,7 +2056,7 @@ Node *parse_stmt()
                 return node;
             }
             else if (expr->type == NODE_ARRAY_ACCESS) {
-                Node *node = calloc(1, sizeof(Node));
+                Node *node = alloc_node();
                 node->type = NODE_ARRAY_ASSIGN;
                 node->array_op.obj = expr->array_op.obj;
                 node->array_op.index = expr->array_op.index;
@@ -2051,7 +2077,7 @@ Node *parse_stmt()
     return NULL;
 }
 
-void add_token(TokenType type, const char *text)
+void add_token(TokenType type, const char *text, int line)
 {
     if (token_count >= token_capacity)
     {
@@ -2059,6 +2085,7 @@ void add_token(TokenType type, const char *text)
         tokens = realloc(tokens, sizeof(Token) * token_capacity);
     }
     tokens[token_count].type = type;
+    tokens[token_count].line = line;
     strncpy(tokens[token_count].text, text, 63);
     tokens[token_count].text[63] = '\0';
     token_count++;
@@ -2124,6 +2151,7 @@ void lex(const char *src)
     // printf("DEBUG: Lex start\n");
     // fflush(stdout);
     int i = 0;
+    int current_line = 1;
     while (src[i] != '\0')
     {
         if (src[i] == '#') {
@@ -2133,6 +2161,7 @@ void lex(const char *src)
 
         if (isspace(src[i]))
         {
+            if (src[i] == '\n') current_line++;
             i++;
             continue;
         }
@@ -2142,13 +2171,15 @@ void lex(const char *src)
             char quote = src[i];
             i++; // pomiń otwierający cudzysłów
             int start = i;
-            while (src[i] != quote && src[i] != '\0')
+            while (src[i] != quote && src[i] != '\0') {
+                if (src[i] == '\n') current_line++;
                 i++;
+            }
             int len = i - start;
             char buf[1024];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
-            add_token(TOKEN_STRING, buf);
+            add_token(TOKEN_STRING, buf, current_line);
             if (src[i] == quote)
                 i++; // pomiń zamykający cudzysłów
             continue;
@@ -2163,39 +2194,39 @@ void lex(const char *src)
             char buf[64];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
-            if (strcmp(buf, "klasa") == 0) add_token(TOKEN_CLASS, buf);
-            else if (strcmp(buf, "konstruktor") == 0) add_token(TOKEN_CONSTRUCTOR, buf);
-            else if (strcmp(buf, "dziedziczy") == 0) add_token(TOKEN_EXTENDS, buf);
-            else if (strcmp(buf, "statyczna") == 0) add_token(TOKEN_STATIC, buf);
-            else if (strcmp(buf, "prywatna") == 0) add_token(TOKEN_PRIVATE, buf);
-            else if (strcmp(buf, "publiczna") == 0) add_token(TOKEN_PUBLIC, buf);
-            else if (strcmp(buf, "nowy") == 0) add_token(TOKEN_NEW, buf);
-            else if (strcmp(buf, "to") == 0) add_token(TOKEN_THIS, buf);
-            else if (strcmp(buf, "nic") == 0) add_token(TOKEN_NULL, buf);
-            else if (strcmp(buf, "sprobuj") == 0) add_token(TOKEN_TRY, buf);
-            else if (strcmp(buf, "zlap") == 0) add_token(TOKEN_CATCH, buf);
-            else if (strcmp(buf, "rzuc") == 0) add_token(TOKEN_THROW, buf);
-            else if (strcmp(buf, "wybor") == 0) add_token(TOKEN_SWITCH, buf);
-            else if (strcmp(buf, "przypadek") == 0) add_token(TOKEN_CASE, buf);
-            else if (strcmp(buf, "domyslnie") == 0) add_token(TOKEN_DEFAULT, buf);
-            else if (strcmp(buf, "dla") == 0) add_token(TOKEN_FOR, buf);
-            else if (strcmp(buf, "w") == 0) add_token(TOKEN_IN, buf);
-            else if (strcmp(buf, "import") == 0) add_token(TOKEN_IMPORT, buf);
+            if (strcmp(buf, "klasa") == 0) add_token(TOKEN_CLASS, buf, current_line);
+            else if (strcmp(buf, "konstruktor") == 0) add_token(TOKEN_CONSTRUCTOR, buf, current_line);
+            else if (strcmp(buf, "dziedziczy") == 0) add_token(TOKEN_EXTENDS, buf, current_line);
+            else if (strcmp(buf, "statyczna") == 0) add_token(TOKEN_STATIC, buf, current_line);
+            else if (strcmp(buf, "prywatna") == 0) add_token(TOKEN_PRIVATE, buf, current_line);
+            else if (strcmp(buf, "publiczna") == 0) add_token(TOKEN_PUBLIC, buf, current_line);
+            else if (strcmp(buf, "nowy") == 0) add_token(TOKEN_NEW, buf, current_line);
+            else if (strcmp(buf, "to") == 0) add_token(TOKEN_THIS, buf, current_line);
+            else if (strcmp(buf, "nic") == 0) add_token(TOKEN_NULL, buf, current_line);
+            else if (strcmp(buf, "sprobuj") == 0) add_token(TOKEN_TRY, buf, current_line);
+            else if (strcmp(buf, "zlap") == 0) add_token(TOKEN_CATCH, buf, current_line);
+            else if (strcmp(buf, "rzuc") == 0) add_token(TOKEN_THROW, buf, current_line);
+            else if (strcmp(buf, "wybor") == 0) add_token(TOKEN_SWITCH, buf, current_line);
+            else if (strcmp(buf, "przypadek") == 0) add_token(TOKEN_CASE, buf, current_line);
+            else if (strcmp(buf, "domyslnie") == 0) add_token(TOKEN_DEFAULT, buf, current_line);
+            else if (strcmp(buf, "dla") == 0) add_token(TOKEN_FOR, buf, current_line);
+            else if (strcmp(buf, "w") == 0) add_token(TOKEN_IN, buf, current_line);
+            else if (strcmp(buf, "import") == 0) add_token(TOKEN_IMPORT, buf, current_line);
             else if (is_keyword(buf))
             {
-                if (strcmp(buf, "prawda") == 0) add_token(TOKEN_TRUE, buf);
-                else if (strcmp(buf, "falsz") == 0) add_token(TOKEN_FALSE, buf);
-                else if (strcmp(buf, "oraz") == 0) add_token(TOKEN_AND, buf);
-                else if (strcmp(buf, "albo") == 0) add_token(TOKEN_OR, buf);
-                else if (strcmp(buf, "zlam") == 0) add_token(TOKEN_BREAK, buf);
-                else if (strcmp(buf, "pomin") == 0) add_token(TOKEN_CONTINUE, buf);
-                else if (strcmp(buf, "rowne") == 0) add_token(TOKEN_EQ, buf);
-                else if (strcmp(buf, "nierowne") == 0) add_token(TOKEN_NEQ, buf);
-                else add_token(TOKEN_KEYWORD, buf);
+                if (strcmp(buf, "prawda") == 0) add_token(TOKEN_TRUE, buf, current_line);
+                else if (strcmp(buf, "falsz") == 0) add_token(TOKEN_FALSE, buf, current_line);
+                else if (strcmp(buf, "oraz") == 0) add_token(TOKEN_AND, buf, current_line);
+                else if (strcmp(buf, "albo") == 0) add_token(TOKEN_OR, buf, current_line);
+                else if (strcmp(buf, "zlam") == 0) add_token(TOKEN_BREAK, buf, current_line);
+                else if (strcmp(buf, "pomin") == 0) add_token(TOKEN_CONTINUE, buf, current_line);
+                else if (strcmp(buf, "rowne") == 0) add_token(TOKEN_EQ, buf, current_line);
+                else if (strcmp(buf, "nierowne") == 0) add_token(TOKEN_NEQ, buf, current_line);
+                else add_token(TOKEN_KEYWORD, buf, current_line);
             }
             else
             {
-                add_token(TOKEN_IDENT, buf);
+                add_token(TOKEN_IDENT, buf, current_line);
             }
             continue;
         }
@@ -2216,7 +2247,7 @@ void lex(const char *src)
             char buf[64];
             strncpy(buf, src + start, len);
             buf[len] = '\0';
-            add_token(TOKEN_NUMBER, buf);
+            add_token(TOKEN_NUMBER, buf, current_line);
             continue;
         }
 
@@ -2231,60 +2262,60 @@ void lex(const char *src)
             switch (c)
             {
             case '^':
-                add_token(TOKEN_BIT_XOR, "^");
+                add_token(TOKEN_BIT_XOR, "^", current_line);
                 break;
             case '~':
-                add_token(TOKEN_BIT_NOT, "~");
+                add_token(TOKEN_BIT_NOT, "~", current_line);
                 break;
             case '.':
-                add_token(TOKEN_DOT, ".");
+                add_token(TOKEN_DOT, ".", current_line);
                 break;
             case ':':
-                add_token(TOKEN_COLON, ":");
+                add_token(TOKEN_COLON, ":", current_line);
                 break;
             case '=':
-                if (src[i+1] == '=') { add_token(TOKEN_EQ, "=="); i++; }
-                else { add_token(TOKEN_ASSIGN, "="); }
+                if (src[i+1] == '=') { add_token(TOKEN_EQ, "==", current_line); i++; }
+                else { add_token(TOKEN_ASSIGN, "=", current_line); }
                 break;
             case '!':
-                if (src[i+1] == '=') { add_token(TOKEN_NEQ, "!="); i++; }
+                if (src[i+1] == '=') { add_token(TOKEN_NEQ, "!=", current_line); i++; }
                 else { printf("Błąd: nieoczekiwany znak '!'\n"); }
                 break;
             case '<':
-                if (src[i+1] == '=') { add_token(TOKEN_LTE, "<="); i++; }
-                else if (src[i+1] == '<') { add_token(TOKEN_LSHIFT, "<<"); i++; }
-                else { add_token(TOKEN_LT, "<"); }
+                if (src[i+1] == '=') { add_token(TOKEN_LTE, "<=", current_line); i++; }
+                else if (src[i+1] == '<') { add_token(TOKEN_LSHIFT, "<<", current_line); i++; }
+                else { add_token(TOKEN_LT, "<", current_line); }
                 break;
             case '>':
-                if (src[i+1] == '=') { add_token(TOKEN_GTE, ">="); i++; }
-                else if (src[i+1] == '>') { add_token(TOKEN_RSHIFT, ">>"); i++; }
-                else { add_token(TOKEN_GT, ">"); }
+                if (src[i+1] == '=') { add_token(TOKEN_GTE, ">=", current_line); i++; }
+                else if (src[i+1] == '>') { add_token(TOKEN_RSHIFT, ">>", current_line); i++; }
+                else { add_token(TOKEN_GT, ">", current_line); }
                 break;
             case '&':
-                if (src[i+1] == '&') { add_token(TOKEN_AND, "&&"); i++; }
-                else { add_token(TOKEN_BIT_AND, "&"); }
+                if (src[i+1] == '&') { add_token(TOKEN_AND, "&&", current_line); i++; }
+                else { add_token(TOKEN_BIT_AND, "&", current_line); }
                 break;
             case '|':
-                if (src[i+1] == '|') { add_token(TOKEN_OR, "||"); i++; }
-                else { add_token(TOKEN_BIT_OR, "|"); }
+                if (src[i+1] == '|') { add_token(TOKEN_OR, "||", current_line); i++; }
+                else { add_token(TOKEN_BIT_OR, "|", current_line); }
                 break;
             case '+':
-                if (src[i+1] == '+') { add_token(TOKEN_INC, "++"); i++; }
-                else if (src[i+1] == '=') { add_token(TOKEN_PLUS_ASSIGN, "+="); i++; }
-                else { add_token(TOKEN_PLUS, "+"); }
+                if (src[i+1] == '+') { add_token(TOKEN_INC, "++", current_line); i++; }
+                else if (src[i+1] == '=') { add_token(TOKEN_PLUS_ASSIGN, "+=", current_line); i++; }
+                else { add_token(TOKEN_PLUS, "+", current_line); }
                 break;
             case '-':
-                if (src[i+1] == '-') { add_token(TOKEN_DEC, "--"); i++; }
-                else if (src[i+1] == '=') { add_token(TOKEN_MINUS_ASSIGN, "-="); i++; }
-                else { add_token(TOKEN_MINUS, "-"); }
+                if (src[i+1] == '-') { add_token(TOKEN_DEC, "--", current_line); i++; }
+                else if (src[i+1] == '=') { add_token(TOKEN_MINUS_ASSIGN, "-=", current_line); i++; }
+                else { add_token(TOKEN_MINUS, "-", current_line); }
                 break;
             case '*':
-                if (src[i+1] == '=') { add_token(TOKEN_MUL_ASSIGN, "*="); i++; }
-                else { add_token(TOKEN_STAR, "*"); }
+                if (src[i+1] == '=') { add_token(TOKEN_MUL_ASSIGN, "*=", current_line); i++; }
+                else { add_token(TOKEN_STAR, "*", current_line); }
                 break;
             case '%':
-                if (src[i+1] == '=') { add_token(TOKEN_MOD_ASSIGN, "%="); i++; }
-                else { add_token(TOKEN_MOD, "%"); }
+                if (src[i+1] == '=') { add_token(TOKEN_MOD_ASSIGN, "%=", current_line); i++; }
+                else { add_token(TOKEN_MOD, "%", current_line); }
                 break;
             case '/':
                 if (src[i+1] == '/') {
@@ -2301,46 +2332,47 @@ void lex(const char *src)
                             i += 2;
                             break;
                         }
+                        if (src[i] == '\n') current_line++;
                         i++;
                     }
                     continue;
                 }
-                else if (src[i+1] == '=') { add_token(TOKEN_DIV_ASSIGN, "/="); i++; }
-                else { add_token(TOKEN_SLASH, "/"); }
+                else if (src[i+1] == '=') { add_token(TOKEN_DIV_ASSIGN, "/=", current_line); i++; }
+                else { add_token(TOKEN_SLASH, "/", current_line); }
                 break;
             case '(':
-                add_token(TOKEN_LPAREN, buf);
+                add_token(TOKEN_LPAREN, buf, current_line);
                 break;
             case ')':
-                add_token(TOKEN_RPAREN, buf);
+                add_token(TOKEN_RPAREN, buf, current_line);
                 break;
             case '[':
-                add_token(TOKEN_LBRACKET, buf);
+                add_token(TOKEN_LBRACKET, buf, current_line);
                 break;
             case ']':
-                add_token(TOKEN_RBRACKET, buf);
+                add_token(TOKEN_RBRACKET, buf, current_line);
                 break;
             case '{':
-                add_token(TOKEN_LBRACE, buf);
+                add_token(TOKEN_LBRACE, buf, current_line);
                 break;
             case '}':
-                add_token(TOKEN_RBRACE, buf);
+                add_token(TOKEN_RBRACE, buf, current_line);
                 break;
             case ';':
-                add_token(TOKEN_SEMICOLON, buf);
+                add_token(TOKEN_SEMICOLON, buf, current_line);
                 break;
             case ',':
-                add_token(TOKEN_COMMA, buf);
+                add_token(TOKEN_COMMA, buf, current_line);
                 break;
             }
         }
         else
         {
-            add_token(TOKEN_IDENT, buf); // traktuj nieznane jako ident
+            add_token(TOKEN_IDENT, buf, current_line); // traktuj nieznane jako ident
         }
         i++;
     }
-    add_token(TOKEN_EOF, "EOF");
+    add_token(TOKEN_EOF, "EOF", current_line);
     // printf("DEBUG: Lex end\n");
     // fflush(stdout);
 }
@@ -3034,7 +3066,7 @@ double eval(Node *n)
                 var->value.doubleValue = val;
             }
         } else {
-            printf("Błąd: zmienna %s nie została zadeklarowana (użyj 'zmienna %s = ...')\n", n->var_name, n->var_name);
+            report_error(n->line, "zmienna '%s' nie została zadeklarowana (użyj 'zmienna %s = ...')", n->var_name, n->var_name);
         }
         return 0;
     }
@@ -3257,7 +3289,7 @@ double eval(Node *n)
     }
     else if (n->type == NODE_FUNC_CALL) {
         if (strcmp(n->call.name, "tekst") == 0) {
-            if (n->call.arg_count != 1) { printf("Błąd: funkcja tekst wymaga 1 argumentu\n"); return 0; }
+            if (n->call.arg_count != 1) { report_error(n->line, "funkcja 'tekst' wymaga 1 argumentu"); return 0; }
             double val = eval(n->call.args[0]);
             char *s = get_node_string(n->call.args[0]);
             
@@ -3273,7 +3305,7 @@ double eval(Node *n)
             return 0;
         }
         if (strcmp(n->call.name, "liczba") == 0) {
-            if (n->call.arg_count != 1) { printf("Błąd: funkcja liczba wymaga 1 argumentu\n"); return 0; }
+            if (n->call.arg_count != 1) { report_error(n->line, "funkcja 'liczba' wymaga 1 argumentu"); return 0; }
             double val = eval(n->call.args[0]);
             char *s = get_node_string(n->call.args[0]);
             
@@ -3293,7 +3325,7 @@ double eval(Node *n)
         if (var && var->type == TYPE_FUNCTION) {
             fn = var->value.funcValue;
         } else {
-            printf("Błąd: nieznana funkcja %s\n", n->call.name); 
+            report_error(n->line, "nieznana funkcja '%s'", n->call.name); 
             return 0; 
         }
         
@@ -3523,7 +3555,7 @@ double eval(Node *n)
             }
             return 0;
         }
-        printf("Nieznana zmienna: %s\n", n->var_name ? n->var_name : "(null)");
+        report_error(n->line, "nieznana zmienna '%s'", n->var_name ? n->var_name : "(null)");
         return 0;
     }
     else if (n->type == NODE_METHOD_CALL) {
