@@ -4775,16 +4775,8 @@ for (const prop of Object.keys(Module)) {
 })();
 
 // Export using a UMD style export, or ES6 exports if selected
-if (typeof exports === 'object' && typeof module === 'object') {
-  module.exports = createBenzinModule;
-  // This default export looks redundant, but it allows TS to import this
-  // commonjs style module.
-  module.exports.default = createBenzinModule;
-} else if (typeof define === 'function' && define['amd']) {
-  // define([], () => createBenzinModule);
-}
-
 if (typeof window !== 'undefined') {
   window.createBenzinModule = createBenzinModule;
+  console.log("Benzin Module registered on window");
 }
 
