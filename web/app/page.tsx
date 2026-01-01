@@ -212,9 +212,9 @@ dla (zmienna i=0; i<3; i++) {
         </button>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* Editor Pane */}
-        <div className="flex-1 border-r border-[#2d2d2d] flex flex-col min-w-[300px]">
+        <div className="flex-1 border-b md:border-b-0 md:border-r border-[#2d2d2d] flex flex-col min-h-[50%] md:min-h-0">
           <div className="flex-1">
             <Editor
               height="100%"
@@ -238,7 +238,7 @@ dla (zmienna i=0; i<3; i++) {
         </div>
 
         {/* Output Pane */}
-        <div className="flex-1 bg-[#1e1e1e] flex flex-col min-w-[300px]">
+        <div className="flex-1 bg-[#1e1e1e] flex flex-col min-h-[50%] md:min-h-0">
           <div className="bg-[#252526] px-4 py-2 text-xs font-semibold text-[#cccccc] uppercase tracking-wider border-b border-[#1e1e1e]">
             Terminal
           </div>
