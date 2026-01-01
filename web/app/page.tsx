@@ -24,14 +24,23 @@ dla (zmienna i=0; i<3; i++) {
     pisz "Petla " + i
 }`);
   const [isReady, setIsReady] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const wasmModule = useRef<BenzinModule | null>(null);
 
   useEffect(() => {
     const loadWasm = async () => {
+      // Timeout check
+      const timeoutId = setTimeout(() => {
+        if (!wasmModule.current) {
+          setLoadError("Timeout: WASM nie załadował się w 10s.");
+        }
+      }, 10000);
+
       try {
         const win = window as WindowWithBenzin;
         
         if (win.BenzinInstance) {
+          clearTimeout(timeoutId);
           setIsReady(true);
           wasmModule.current = win.BenzinInstance;
           return;
@@ -40,16 +49,15 @@ dla (zmienna i=0; i<3; i++) {
         const script = document.createElement('script');
         script.src = '/benzin.js';
 
-        // FIX: Temporarily hide 'define' to prevent Emscripten from using AMD loader
-        // This avoids "Can only have one anonymous define call per script file" error
-        // caused by conflict with Monaco Editor's loader.
-        const globalWin = window as any;
-        const savedDefine = globalWin.define;
-        globalWin.define = undefined;
-
         script.onload = async () => {
-          // Restore 'define'
-          globalWin.define = savedDefine;
+          console.log("Benzin script loaded. Checking for createBenzinModule...");
+          if (typeof (window as any).createBenzinModule === 'function') {
+             console.log("createBenzinModule found!");
+          } else {
+             console.error("createBenzinModule NOT found on window!");
+             setLoadError("Błąd: createBenzinModule nie znaleziono.");
+             return;
+          }
 
           if (win.createBenzinModule) {
             const moduleConfig = {
@@ -58,29 +66,38 @@ dla (zmienna i=0; i<3; i++) {
               },
               printErr: (text: string) => {
                 setOutput((prev) => prev + '[BŁĄD] ' + text + '\\n');
+              },
+              locateFile: (path: string) => {
+                if (path.endsWith('.wasm')) {
+                  return '/benzin.wasm';
+                }
+                return path;
               }
             };
 
             try {
               const instance = await win.createBenzinModule(moduleConfig);
+              clearTimeout(timeoutId);
               wasmModule.current = instance;
               win.BenzinInstance = instance;
               setIsReady(true);
             } catch (e) {
               console.error("WASM init error:", e);
+              setLoadError("Błąd inicjalizacji WASM: " + String(e));
               setOutput(prev => prev + "Critical Error: Failed to initialize WASM\\n" + String(e));
             }
           }
         };
         
         script.onerror = () => {
-          globalWin.define = savedDefine;
           console.error("Failed to load benzin.js");
+          setLoadError("Nie udało się pobrać benzin.js");
         };
 
         document.body.appendChild(script);
       } catch (err) {
         console.error(err);
+        setLoadError("Nieoczekiwany błąd: " + String(err));
       }
     };
     loadWasm();
@@ -91,14 +108,28 @@ dla (zmienna i=0; i<3; i++) {
     if (wasmModule.current) {
       try {
         wasmModule.current.ccall('run_code', 'null', ['string'], [code]);
-      } catch (e) {
-        setOutput((prev) => prev + '\\n[CRITICAL ERROR] ' + String(e));
+      } catch (e: any) {
+        let errorMsg = String(e);
+        if (typeof e === 'object' && e !== null) {
+            if (e.message) errorMsg = e.message;
+            if (e.stack) console.error(e.stack);
+        }
+        setOutput((prev) => prev + '\\n[CRITICAL ERROR] ' + errorMsg);
       }
     }
   };
 
   const handleEditorWillMount = (monaco: any) => {
-    monaco.languages.register({ id: 'benzin' });
+    if (!monaco || !monaco.languages) {
+      console.error("Monaco instance not properly initialized", monaco);
+      return;
+    }
+
+    // Check if language is already registered
+    const languages = monaco.languages.getLanguages();
+    if (!languages.some((l: any) => l.id === 'benzin')) {
+      monaco.languages.register({ id: 'benzin' });
+    }
 
     monaco.languages.setMonarchTokensProvider('benzin', {
       tokenizer: {
@@ -161,7 +192,9 @@ dla (zmienna i=0; i<3; i++) {
             flex items-center gap-2 px-3 py-1 rounded-sm font-semibold text-xs transition-colors
             ${isReady 
               ? 'bg-[#238636] text-white hover:bg-[#2ea043] cursor-pointer' 
-              : 'bg-[#2d2d2d] text-[#6e7681] cursor-not-allowed'}
+              : loadError 
+                ? 'bg-[#8b0000] text-white cursor-help'
+                : 'bg-[#2d2d2d] text-[#6e7681] cursor-not-allowed'}
           `}
         >
           {isReady ? (
@@ -171,6 +204,8 @@ dla (zmienna i=0; i<3; i++) {
               </svg>
               URUCHOM
             </>
+          ) : loadError ? (
+             <span title={loadError}>BŁĄD (najedź)</span>
           ) : (
             'Ładowanie...'
           )}

@@ -4780,6 +4780,11 @@ if (typeof exports === 'object' && typeof module === 'object') {
   // This default export looks redundant, but it allows TS to import this
   // commonjs style module.
   module.exports.default = createBenzinModule;
-} else if (typeof define === 'function' && define['amd'])
-  define([], () => createBenzinModule);
+} else if (typeof define === 'function' && define['amd']) {
+  // define([], () => createBenzinModule);
+}
+
+if (typeof window !== 'undefined') {
+  window.createBenzinModule = createBenzinModule;
+}
 

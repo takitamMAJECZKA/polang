@@ -382,6 +382,10 @@ Env *global_env = NULL;
 Env *current_env = NULL;
 struct Instance *current_instance = NULL;
 
+// Module flags
+int module_matma_loaded = 0;
+int module_plik_loaded = 0;
+
 // Call stack for GC
 Env *gc_call_stack[256];
 int gc_call_stack_count = 0;
@@ -3579,7 +3583,7 @@ double eval(Node *n)
         
         // Handle built-in objects Matma and Plik
         if (n->method.obj->type == NODE_VARIABLE) {
-            if (strcmp(n->method.obj->var_name, "Matma") == 0) {
+            if (module_matma_loaded && strcmp(n->method.obj->var_name, "Matma") == 0) {
                 if (strcmp(n->method.name, "sin") == 0) {
                     if (n->method.arg_count >= 1) return sin(eval(n->method.args[0]));
                     return 0;
@@ -3608,7 +3612,7 @@ double eval(Node *n)
                 }
                 return 0;
             }
-            if (strcmp(n->method.obj->var_name, "Plik") == 0) {
+            if (module_plik_loaded && strcmp(n->method.obj->var_name, "Plik") == 0) {
                 if (strcmp(n->method.name, "czytaj") == 0) {
                     if (n->method.arg_count >= 1) {
                         eval(n->method.args[0]);
@@ -4167,6 +4171,17 @@ double eval(Node *n)
     }
     else if (n->type == NODE_IMPORT) {
         char *path = n->string_value;
+        
+        // Built-in modules
+        if (strcmp(path, "Matma") == 0 || strcmp(path, "matma") == 0) {
+            module_matma_loaded = 1;
+            return 0;
+        }
+        if (strcmp(path, "Plik") == 0 || strcmp(path, "plik") == 0) {
+            module_plik_loaded = 1;
+            return 0;
+        }
+
         FILE *f = fopen(path, "rb");
         if (!f) {
             printf("Błąd: nie można otworzyć pliku importu %s\n", path);

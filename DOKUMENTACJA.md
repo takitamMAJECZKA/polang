@@ -249,6 +249,8 @@ Metody dostępne na każdym napisie:
 *   `.podziel(separator)` - dzieli napis na tablicę.
 
 ### Matematyka (`Matma`)
+> **Uwaga:** Wymaga zaimportowania modułu: `import "Matma";`
+
 *   `Matma.PI`
 *   `Matma.sin(x)`, `Matma.cos(x)`
 *   `Matma.pierwiastek(x)`
@@ -257,6 +259,8 @@ Metody dostępne na każdym napisie:
 *   `Matma.czas()` - timestamp
 
 ### Pliki (`Plik`)
+> **Uwaga:** Wymaga zaimportowania modułu: `import "Plik";`
+
 *   `Plik.czytaj("sciezka")`
 *   `Plik.zapisz("sciezka", "tresc")`
 *   `Plik.dopisz("sciezka", "tresc")`
