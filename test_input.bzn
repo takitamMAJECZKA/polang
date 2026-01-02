@@ -1,0 +1,3 @@
+pisz "Podaj imie:";
+zmienna imie = wejscie();
+pisz "Witaj " + imie + "!";

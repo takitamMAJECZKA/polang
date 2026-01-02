@@ -1,0 +1,18 @@
+zmienna x = 10;
+pisz "Typ x: " + typ(x);
+
+zmienna s = "witaj";
+pisz "Typ s: " + typ(s);
+
+zmienna n = napis(123.45);
+pisz "napis(123.45): " + n;
+pisz "Typ n: " + typ(n);
+
+zmienna l = liczba("99.9");
+pisz "liczba('99.9'): " + l;
+pisz "Typ l: " + typ(l);
+
+zmienna t = [1, 2, 3];
+pisz "Typ t: " + typ(t);
+
+pisz "Koniec testu";

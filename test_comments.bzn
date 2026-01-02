@@ -1,0 +1,8 @@
+// To jest komentarz jednolinijkowy
+pisz "Test komentarzy";
+
+/*
+To jest komentarz
+wielolinijkowy
+*/
+pisz "Koniec testu";

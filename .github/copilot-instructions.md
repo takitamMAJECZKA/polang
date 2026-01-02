@@ -22,11 +22,11 @@ This is a custom interpreter for "mylang", a programming language with Polish ke
 ## Developer Workflow
 - **Build**: Compile directly using GCC/Clang.
   ```bash
-  gcc main.c -o mylang.exe
+  gcc main.c -o benzin.exe
   ```
 - **Run**: Execute the binary with a source file.
   ```bash
-  ./mylang.exe plik.mylang
+  ./benzin.exe plik.mylang
   ```
 - **Debug**: Use `printf` for debugging. The code already contains debug prints for tokenization and evaluation results.
 

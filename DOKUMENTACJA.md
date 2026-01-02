@@ -264,7 +264,24 @@ Metody dostępne na każdym napisie:
 *   `Plik.czytaj("sciezka")`
 *   `Plik.zapisz("sciezka", "tresc")`
 *   `Plik.dopisz("sciezka", "tresc")`
+*   `Plik.istnieje("sciezka")`
+*   `Plik.usun("sciezka")`
 
-### Konwersja
-*   `tekst(x)`
-*   `liczba(x)`
+### Funkcje Globalne
+Dostępne bez importowania żadnych modułów:
+
+*   `wejscie()` - pobiera linię tekstu od użytkownika.
+*   `losuj(min, max)` - zwraca losową liczbę z zakresu [min, max). Bez argumentów zwraca 0.0-1.0.
+*   `typ(x)` - zwraca typ zmiennej jako napis ("liczba", "napis", "tablica", "slownik", "logiczna", "funkcja", "obiekt", "nic").
+*   `napis(x)` lub `tekst(x)` - konwertuje wartość na napis.
+*   `liczba(x)` - konwertuje napis na liczbę.
+
+### Metody Tablic
+*   `.dodaj(element)` - dodaje element na koniec tablicy.
+*   `.usun(index)` - usuwa element pod danym indeksem.
+*   `.dlugosc` - zwraca liczbę elementów.
+
+### Metody Napisów
+*   `.zawiera(tekst)` - sprawdza czy napis zawiera podany tekst (zwraca prawda/falsz).
+*   `.dlugosc` - zwraca długość napisu.
+

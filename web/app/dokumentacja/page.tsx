@@ -220,6 +220,14 @@ export default function Dokumentacja() {
                     <span className="text-[#dcdcaa]">pisz</span> <span className="text-[#4ec9b0]">Matma</span>.<span className="text-[#dcdcaa]">pierwiastek</span>(<span className="text-[#b5cea8]">16</span>); <span className="text-[#6a9955]"># Wypisze 4</span><br/>
                     <span className="text-[#dcdcaa]">pisz</span> <span className="text-[#4ec9b0]">Matma</span>.<span className="text-[#dcdcaa]">losuj</span>(); <span className="text-[#6a9955]"># Wylosuje liczbę</span>
                     </div>
+                    <p className="mb-4">
+                    Możesz też tworzyć okienka!
+                    </p>
+                    <div className="bg-[#1e1e1e] border border-[#2d2d2d] p-4 rounded-md font-mono text-sm">
+                    <span className="text-[#c586c0]">import</span> <span className="text-[#ce9178]">"Okna"</span>;<br/><br/>
+                    <span className="text-[#4ec9b0]">Okna</span>.<span className="text-[#dcdcaa]">komunikat</span>(<span className="text-[#ce9178]">"Cześć!"</span>);<br/>
+                    <span className="text-[#569cd6]">zmienna</span> <span className="text-[#9cdcfe]">odp</span> = <span className="text-[#4ec9b0]">Okna</span>.<span className="text-[#dcdcaa]">pytanie</span>(<span className="text-[#ce9178]">"Lubisz koty?"</span>);
+                    </div>
                 </section>
                 </div>
             </>
@@ -402,7 +410,15 @@ export default function Dokumentacja() {
                         <h3 className="font-bold text-[#9cdcfe] mb-2">Wejście / Wyjście</h3>
                         <ul className="list-disc list-inside mb-4 space-y-1 text-[#9cdcfe]">
                             <li><code className="text-[#dcdcaa]">pisz</code> <span className="text-[#ce9178]">"tekst"</span> - Wypisuje tekst na standardowe wyjście.</li>
-                            <li><code className="text-[#c586c0]">podaj</code> <span className="text-[#9cdcfe]">zmienna</span> - Pobiera dane od użytkownika.</li>
+                            <li><code className="text-[#dcdcaa]">wejscie</code>() - Pobiera linię tekstu od użytkownika.</li>
+                        </ul>
+
+                        <h3 className="font-bold text-[#9cdcfe] mb-2">Funkcje Globalne</h3>
+                        <ul className="list-disc list-inside mb-4 space-y-1 text-[#9cdcfe]">
+                            <li><code className="text-[#dcdcaa]">typ</code>(x) - Zwraca typ zmiennej ("liczba", "napis", "tablica", ...).</li>
+                            <li><code className="text-[#dcdcaa]">napis</code>(x) - Konwertuje na napis.</li>
+                            <li><code className="text-[#dcdcaa]">liczba</code>(x) - Konwertuje napis na liczbę.</li>
+                            <li><code className="text-[#dcdcaa]">losuj</code>(min, max) - Zwraca losową liczbę.</li>
                         </ul>
 
                         <h3 className="font-bold text-[#9cdcfe] mb-2">Matematyka (Moduł Matma)</h3>
@@ -422,6 +438,14 @@ export default function Dokumentacja() {
                             <span className="text-[#4ec9b0]">Plik</span>.<span className="text-[#dcdcaa]">zapisz</span>(<span className="text-[#ce9178]">"dane.txt"</span>, <span className="text-[#ce9178]">"Treść"</span>);<br/>
                             <span className="text-[#569cd6]">zmienna</span> <span className="text-[#9cdcfe]">tresc</span> = <span className="text-[#4ec9b0]">Plik</span>.<span className="text-[#dcdcaa]">czytaj</span>(<span className="text-[#ce9178]">"dane.txt"</span>);<br/>
                             <span className="text-[#4ec9b0]">Plik</span>.<span className="text-[#dcdcaa]">dopisz</span>(<span className="text-[#ce9178]">"dane.txt"</span>, <span className="text-[#ce9178]">"\nNowa linia"</span>);
+                        </div>
+
+                        <h3 className="font-bold text-[#9cdcfe] mb-2">GUI (Moduł Okna)</h3>
+                        <div className="bg-[#1e1e1e] border border-[#2d2d2d] p-4 rounded-md font-mono text-sm">
+                            <span className="text-[#c586c0]">import</span> <span className="text-[#ce9178]">"Okna"</span>;<br/><br/>
+                            <span className="text-[#4ec9b0]">Okna</span>.<span className="text-[#dcdcaa]">komunikat</span>(<span className="text-[#ce9178]">"Wiadomość"</span>); <span className="text-[#6a9955]"># MessageBox OK</span><br/>
+                            <span className="text-[#569cd6]">zmienna</span> <span className="text-[#9cdcfe]">odp</span> = <span className="text-[#4ec9b0]">Okna</span>.<span className="text-[#dcdcaa]">pytanie</span>(<span className="text-[#ce9178]">"Tak czy Nie?"</span>); <span className="text-[#6a9955]"># Zwraca 1.0 (Tak) lub 0.0 (Nie)</span><br/>
+                            <span className="text-[#4ec9b0]">Okna</span>.<span className="text-[#dcdcaa]">blad</span>(<span className="text-[#ce9178]">"Błąd krytyczny"</span>); <span className="text-[#6a9955]"># MessageBox Error</span>
                         </div>
                     </section>
 

@@ -7,6 +7,10 @@
 #include <time.h>
 #include <stdarg.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #endif
@@ -250,11 +254,11 @@ typedef enum
     TOKEN_IN,
     TOKEN_IMPORT,
     TOKEN_EOF       // koniec pliku
-} TokenType;
+} BznTokenType;
 
 typedef struct
 {
-    TokenType type;
+    BznTokenType type;
     char text[64];
     int line;
 } Token;
@@ -264,13 +268,39 @@ int token_count = 0;
 int token_capacity = 0;
 int pos = 0;
 
+// Global source code pointer for error reporting
+const char *global_src = NULL;
+
 void report_error(int line, const char *format, ...) {
     va_list args;
     va_start(args, format);
-    fprintf(stderr, "Błąd w linii %d: ", line);
+    fprintf(stderr, "\n\033[1;31mBłąd w linii %d:\033[0m ", line);
     vfprintf(stderr, format, args);
     fprintf(stderr, "\n");
     va_end(args);
+
+    if (global_src) {
+        // Find the line in source
+        int current_line = 1;
+        const char *p = global_src;
+        const char *line_start = p;
+        while (*p) {
+            if (current_line == line) {
+                line_start = p;
+                break;
+            }
+            if (*p == '\n') current_line++;
+            p++;
+        }
+        
+        if (*p) {
+            // Print the line
+            const char *end = strchr(line_start, '\n');
+            int len = end ? (end - line_start) : strlen(line_start);
+            fprintf(stderr, "    %.*s\n", len, line_start);
+            fprintf(stderr, "    \033[1;33m^\033[0m\n");
+        }
+    }
     exit(1);
 }
 
@@ -355,7 +385,7 @@ typedef struct Dict {
 
 typedef struct
 {
-    char name[64]; // <-- tu trzymamy nazwę zmiennej
+    char *name; // <-- ZMIANA: dynamiczny string zamiast tablicy
     VarType type;
     union
     {
@@ -370,13 +400,122 @@ typedef struct
     } value;
 } Variable;
 
+// Hash Map Entry
+typedef struct TableEntry {
+    char *key;
+    Variable value;
+    struct TableEntry *next; // Chaining for collisions
+} TableEntry;
+
+// Hash Map Table
+typedef struct Table {
+    TableEntry **entries;
+    int count;
+    int capacity;
+} Table;
+
 typedef struct Env {
     ObjHeader header;
-    Variable *variables;
-    int var_count;
-    int var_capacity;
+    Table *table; // <-- ZMIANA: Hash Map zamiast tablicy
     struct Env *parent;
 } Env;
+
+// FNV-1a Hash Function
+unsigned int hash_string(const char *key) {
+    unsigned int hash = 2166136261u;
+    while (*key) {
+        hash ^= (unsigned char)(*key);
+        hash *= 16777619;
+        key++;
+    }
+    return hash;
+}
+
+Table *create_table() {
+    Table *t = malloc(sizeof(Table));
+    t->count = 0;
+    t->capacity = 16; // Initial capacity
+    t->entries = calloc(t->capacity, sizeof(TableEntry*));
+    return t;
+}
+
+void free_table(Table *t) {
+    if (!t) return;
+    for (int i = 0; i < t->capacity; i++) {
+        TableEntry *e = t->entries[i];
+        while (e) {
+            TableEntry *next = e->next;
+            free(e->key);
+            // Note: Variable values might need freeing too if we were strict, 
+            // but GC handles objects. Strings in Variable are fixed size for now.
+            free(e);
+            e = next;
+        }
+    }
+    free(t->entries);
+    free(t);
+}
+
+Variable *table_get(Table *t, const char *key) {
+    if (t->count == 0) return NULL;
+    unsigned int index = hash_string(key) % t->capacity;
+    TableEntry *e = t->entries[index];
+    while (e) {
+        if (strcmp(e->key, key) == 0) return &e->value;
+        e = e->next;
+    }
+    return NULL;
+}
+
+void table_resize(Table *t); // Forward decl
+
+Variable *table_set(Table *t, const char *key) {
+    if (t->count + 1 > t->capacity * 0.75) {
+        table_resize(t);
+    }
+    unsigned int index = hash_string(key) % t->capacity;
+    TableEntry *e = t->entries[index];
+    while (e) {
+        if (strcmp(e->key, key) == 0) return &e->value;
+        e = e->next;
+    }
+    
+    // New entry
+    TableEntry *new_entry = malloc(sizeof(TableEntry));
+    new_entry->key = strdup(key);
+    new_entry->next = t->entries[index];
+    // Default init
+    new_entry->value.name = new_entry->key; // Point to the same string
+    new_entry->value.type = TYPE_DOUBLE;
+    new_entry->value.value.doubleValue = 0;
+    
+    t->entries[index] = new_entry;
+    t->count++;
+    return &new_entry->value;
+}
+
+void table_resize(Table *t) {
+    int old_capacity = t->capacity;
+    TableEntry **old_entries = t->entries;
+    
+    t->capacity *= 2;
+    t->entries = calloc(t->capacity, sizeof(TableEntry*));
+    t->count = 0; // Will be re-incremented
+    
+    for (int i = 0; i < old_capacity; i++) {
+        TableEntry *e = old_entries[i];
+        while (e) {
+            TableEntry *next = e->next;
+            // Re-insert (simplified logic of table_set without allocation)
+            unsigned int index = hash_string(e->key) % t->capacity;
+            e->next = t->entries[index];
+            t->entries[index] = e;
+            t->count++;
+            e = next;
+        }
+    }
+    free(old_entries);
+}
 
 Env *global_env = NULL;
 Env *current_env = NULL;
@@ -385,6 +524,7 @@ struct Instance *current_instance = NULL;
 // Module flags
 int module_matma_loaded = 0;
 int module_plik_loaded = 0;
+int module_okna_loaded = 0;
 
 // Call stack for GC
 Env *gc_call_stack[256];
@@ -395,9 +535,8 @@ void gc_register(ObjHeader *obj, ObjType type); // Forward decl
 Env *create_env(Env *parent) {
     Env *env = calloc(1, sizeof(Env));
     env->parent = parent;
-    env->var_count = 0;
-    env->var_capacity = 8;
-    env->variables = malloc(sizeof(Variable) * env->var_capacity);
+    env->table = create_table();
+    
     ObjHeader *prev_root = gc_temp_root;
     gc_temp_root = (ObjHeader*)env;
     gc_register((ObjHeader*)env, OBJ_ENV);
@@ -407,36 +546,15 @@ Env *create_env(Env *parent) {
 
 Variable *env_get(Env *env, const char *name) {
     if (!env || !name) return NULL;
-    // printf("DEBUG: Looking for %s in env %p (count=%d)\n", name, env, env->var_count);
-    for (int i = 0; i < env->var_count; i++) {
-        // printf("  - Found var: %s\n", env->variables[i].name);
-        if (strcmp(env->variables[i].name, name) == 0) {
-            return &env->variables[i];
-        }
-    }
+    Variable *var = table_get(env->table, name);
+    if (var) return var;
     if (env->parent) return env_get(env->parent, name);
     return NULL;
 }
 
 Variable *env_define(Env *env, const char *name) {
     if (!env || !name) return NULL;
-    // printf("DEBUG: Defining %s in env %p\n", name, env);
-    for (int i = 0; i < env->var_count; i++) {
-        if (strcmp(env->variables[i].name, name) == 0) {
-            return &env->variables[i]; // Return existing to update
-        }
-    }
-    if (env->var_count >= env->var_capacity) {
-        env->var_capacity *= 2;
-        env->variables = realloc(env->variables, sizeof(Variable) * env->var_capacity);
-    }
-    Variable *var = &env->variables[env->var_count++];
-    // printf("DEBUG: Allocating var %s at %p (env vars %p)\n", name, var, env->variables);
-    strncpy(var->name, name, 63);
-    // Initialize to safe defaults
-    var->type = TYPE_DOUBLE;
-    var->value.doubleValue = 0;
-    return var;
+    return table_set(env->table, name);
 }
 
 typedef struct {
@@ -748,13 +866,21 @@ void mark_object(ObjHeader *obj) {
 void mark_env(Env *env) {
     if (!env || env->header.marked) return;
     env->header.marked = 1;
-    for (int i=0; i<env->var_count; i++) {
-        Variable *v = &env->variables[i];
-        if (v->type == TYPE_ARRAY && v->value.arrayValue) mark_object((ObjHeader*)v->value.arrayValue);
-        else if (v->type == TYPE_DICT && v->value.dictValue) mark_object((ObjHeader*)v->value.dictValue);
-        else if (v->type == TYPE_INSTANCE && v->value.instanceValue) mark_object((ObjHeader*)v->value.instanceValue);
-        else if (v->type == TYPE_FUNCTION && v->value.funcValue) mark_object((ObjHeader*)v->value.funcValue);
+    
+    if (env->table) {
+        for (int i = 0; i < env->table->capacity; i++) {
+            TableEntry *e = env->table->entries[i];
+            while (e) {
+                Variable *v = &e->value;
+                if (v->type == TYPE_ARRAY && v->value.arrayValue) mark_object((ObjHeader*)v->value.arrayValue);
+                else if (v->type == TYPE_DICT && v->value.dictValue) mark_object((ObjHeader*)v->value.dictValue);
+                else if (v->type == TYPE_INSTANCE && v->value.instanceValue) mark_object((ObjHeader*)v->value.instanceValue);
+                else if (v->type == TYPE_FUNCTION && v->value.funcValue) mark_object((ObjHeader*)v->value.funcValue);
+                e = e->next;
+            }
+        }
     }
+    
     if (env->parent) mark_object((ObjHeader*)env->parent);
 }
 
@@ -824,7 +950,7 @@ void gc_register(ObjHeader *obj, ObjType type) {
 void free_env(Env *env) {
     if (!env) return;
     // No need to decref, GC handles it
-    if (env->variables) free(env->variables);
+    if (env->table) free_table(env->table);
     free(env);
 }
 
@@ -850,6 +976,48 @@ Node *make_string(const char *text)
 
 Node *make_op(int op_type, Node *a, Node *b)
 {
+    // Constant Folding Optimization
+    if (a && b && a->type == NODE_NUMBER && b->type == NODE_NUMBER) {
+        double val_a = a->value;
+        double val_b = b->value;
+        double result = 0;
+        int folded = 1;
+
+        switch (op_type) {
+            case TOKEN_PLUS: result = val_a + val_b; break;
+            case TOKEN_MINUS: result = val_a - val_b; break;
+            case TOKEN_STAR: result = val_a * val_b; break;
+            case TOKEN_SLASH: 
+                if (val_b != 0) result = val_a / val_b; 
+                else folded = 0; // Don't fold division by zero, let runtime handle it
+                break;
+            case TOKEN_MOD: 
+                if (val_b != 0) result = fmod(val_a, val_b);
+                else folded = 0;
+                break;
+            case TOKEN_EQ: result = (val_a == val_b); break;
+            case TOKEN_NEQ: result = (val_a != val_b); break;
+            case TOKEN_LT: result = (val_a < val_b); break;
+            case TOKEN_GT: result = (val_a > val_b); break;
+            case TOKEN_LTE: result = (val_a <= val_b); break;
+            case TOKEN_GTE: result = (val_a >= val_b); break;
+            default: folded = 0; break;
+        }
+
+        if (folded) {
+            // Free the children nodes as they are now merged
+            // Note: In a full GC system we might just let them be collected, 
+            // but here we can manually free them to save memory immediately.
+            // free_node(a); // Be careful if nodes are shared! In this parser they are unique trees.
+            // free_node(b);
+            
+            Node *n = alloc_node();
+            n->type = NODE_NUMBER;
+            n->value = result;
+            return n;
+        }
+    }
+
     Node *n = alloc_node();
     n->type = NODE_OPERATION;
     n->op.op_type = op_type;
@@ -2091,7 +2259,7 @@ Node *parse_stmt()
     return NULL;
 }
 
-void add_token(TokenType type, const char *text, int line)
+void add_token(BznTokenType type, const char *text, int line)
 {
     if (token_count >= token_capacity)
     {
@@ -2168,6 +2336,19 @@ void lex(const char *src)
     int current_line = 1;
     while (src[i] != '\0')
     {
+        if (src[i] == '/' && src[i+1] == '/') {
+            while (src[i] != '\0' && src[i] != '\n') i++;
+            continue;
+        }
+        if (src[i] == '/' && src[i+1] == '*') {
+            i += 2;
+            while (src[i] != '\0' && !(src[i] == '*' && src[i+1] == '/')) {
+                if (src[i] == '\n') current_line++;
+                i++;
+            }
+            if (src[i] != '\0') i += 2;
+            continue;
+        }
         if (src[i] == '#') {
             while (src[i] != '\0' && src[i] != '\n') i++;
             continue;
@@ -2817,9 +2998,9 @@ double eval(Node *n)
             
             if (dict) {
                 eval(n->array_op.index);
-                char *key = get_node_string(n->array_op.index);
-                if (key) {
-                    // key is valid
+                char *key = NULL;
+                if (n->array_op.index->string_value) {
+                    key = n->array_op.index->string_value;
                 } else {
                     printf("Błąd: klucz słownika musi być napisem\n");
                     return 0;
@@ -3302,33 +3483,86 @@ double eval(Node *n)
         return return_value;
     }
     else if (n->type == NODE_FUNC_CALL) {
-        if (strcmp(n->call.name, "tekst") == 0) {
-            if (n->call.arg_count != 1) { report_error(n->line, "funkcja 'tekst' wymaga 1 argumentu"); return 0; }
-            double val = eval(n->call.args[0]);
-            char *s = get_node_string(n->call.args[0]);
-            
-            if (n->string_value) free(n->string_value);
-            
-            if (s) {
-                n->string_value = strdup(s);
+        // Built-in: wejscie()
+        if (strcmp(n->call.name, "wejscie") == 0) {
+            char buffer[256];
+            if (fgets(buffer, sizeof(buffer), stdin)) {
+                buffer[strcspn(buffer, "\n")] = 0; // Remove newline
+                if (n->string_value) free(n->string_value);
+                n->string_value = strdup(buffer);
             } else {
-                char buf[64];
-                snprintf(buf, 64, "%g", val);
-                n->string_value = strdup(buf);
+                if (n->string_value) free(n->string_value);
+                n->string_value = strdup("");
             }
             return 0;
         }
+        // Built-in: losuj(min, max)
+        if (strcmp(n->call.name, "losuj") == 0) {
+            if (n->call.arg_count == 2) {
+                double min = eval(n->call.args[0]);
+                double max = eval(n->call.args[1]);
+                double r = (double)rand() / (double)RAND_MAX;
+                return min + r * (max - min);
+            } else if (n->call.arg_count == 0) {
+                 return (double)rand() / (double)RAND_MAX;
+            }
+        }
+        // Built-in: typ(x)
+        if (strcmp(n->call.name, "typ") == 0) {
+            if (n->call.arg_count >= 1) {
+                Node *arg = n->call.args[0];
+                if (arg->type == NODE_VARIABLE) {
+                    Variable *v = get_variable(arg->var_name);
+                    if (v) {
+                        if (n->string_value) free(n->string_value);
+                        if (v->type == TYPE_DOUBLE) n->string_value = strdup("liczba");
+                        else if (v->type == TYPE_STRING) n->string_value = strdup("napis");
+                        else if (v->type == TYPE_ARRAY) n->string_value = strdup("tablica");
+                        else if (v->type == TYPE_DICT) n->string_value = strdup("slownik");
+                        else if (v->type == TYPE_BOOL) n->string_value = strdup("logiczna");
+                        else if (v->type == TYPE_FUNCTION) n->string_value = strdup("funkcja");
+                        else if (v->type == TYPE_INSTANCE) n->string_value = strdup("obiekt");
+                        else if (v->type == TYPE_NULL) n->string_value = strdup("nic");
+                        else n->string_value = strdup("nieznany");
+                        return 0;
+                    }
+                }
+                eval(arg);
+                if (n->string_value) free(n->string_value);
+                
+                if (arg->string_value) n->string_value = strdup("napis");
+                else if (arg->array_value) n->string_value = strdup("tablica");
+                else if (arg->dict_value) n->string_value = strdup("slownik");
+                else if (arg->type == NODE_BOOL) n->string_value = strdup("logiczna");
+                else n->string_value = strdup("liczba");
+                return 0;
+            }
+            return 0;
+        }
+        // Built-in: napis(x) or tekst(x)
+        if (strcmp(n->call.name, "napis") == 0 || strcmp(n->call.name, "tekst") == 0) {
+            if (n->call.arg_count >= 1) {
+                double val = eval(n->call.args[0]);
+                char buf[64];
+                if (n->call.args[0]->string_value) {
+                    if (n->string_value) free(n->string_value);
+                    n->string_value = strdup(n->call.args[0]->string_value);
+                } else {
+                    sprintf(buf, "%g", val);
+                    if (n->string_value) free(n->string_value);
+                    n->string_value = strdup(buf);
+                }
+                return 0;
+            }
+        }
+        // Built-in: liczba(x)
         if (strcmp(n->call.name, "liczba") == 0) {
-            if (n->call.arg_count != 1) { report_error(n->line, "funkcja 'liczba' wymaga 1 argumentu"); return 0; }
-            double val = eval(n->call.args[0]);
-            char *s = get_node_string(n->call.args[0]);
-            
-            if (n->string_value) { free(n->string_value); n->string_value = NULL; }
-            
-            if (s) {
-                return atof(s);
-            } else {
-                return val;
+            if (n->call.arg_count >= 1) {
+                eval(n->call.args[0]);
+                if (n->call.args[0]->string_value) {
+                    return atof(n->call.args[0]->string_value);
+                }
+                return eval(n->call.args[0]);
             }
         }
 
@@ -3643,6 +3877,31 @@ double eval(Node *n)
                     }
                     return 0;
                 }
+                if (strcmp(n->method.name, "istnieje") == 0) {
+                    if (n->method.arg_count >= 1) {
+                        eval(n->method.args[0]);
+                        char *path = n->method.args[0]->string_value;
+                        if (path) {
+                            FILE *f = fopen(path, "r");
+                            if (f) {
+                                fclose(f);
+                                return 1.0;
+                            }
+                            return 0.0;
+                        }
+                    }
+                    return 0;
+                }
+                if (strcmp(n->method.name, "usun") == 0) {
+                    if (n->method.arg_count >= 1) {
+                        eval(n->method.args[0]);
+                        char *path = n->method.args[0]->string_value;
+                        if (path) {
+                            remove(path);
+                        }
+                    }
+                    return 0;
+                }
                 if (strcmp(n->method.name, "zapisz") == 0 || strcmp(n->method.name, "dopisz") == 0) {
                     if (n->method.arg_count >= 2) {
                         eval(n->method.args[0]);
@@ -3674,11 +3933,122 @@ double eval(Node *n)
                 }
                 return 0;
             }
+            if (module_okna_loaded && strcmp(n->method.obj->var_name, "Okna") == 0) {
+                if (strcmp(n->method.name, "komunikat") == 0) {
+                    if (n->method.arg_count >= 1) {
+                        eval(n->method.args[0]);
+                        char *msg = n->method.args[0]->string_value;
+                        char buf[64];
+                        if (!msg) {
+                            sprintf(buf, "%g", n->method.args[0]->value);
+                            msg = buf;
+                        }
+                        #ifdef _WIN32
+                        MessageBox(NULL, msg, "Benzin Info", MB_OK | MB_ICONINFORMATION);
+                        #else
+                        printf("[OKNO] %s\n", msg);
+                        #endif
+                    }
+                    return 0;
+                }
+                if (strcmp(n->method.name, "pytanie") == 0) {
+                    if (n->method.arg_count >= 1) {
+                        eval(n->method.args[0]);
+                        char *msg = n->method.args[0]->string_value;
+                        char buf[64];
+                        if (!msg) {
+                            sprintf(buf, "%g", n->method.args[0]->value);
+                            msg = buf;
+                        }
+                        #ifdef _WIN32
+                        int result = MessageBox(NULL, msg, "Benzin Pytanie", MB_YESNO | MB_ICONQUESTION);
+                        return (result == IDYES) ? 1.0 : 0.0;
+                        #else
+                        printf("[PYTANIE] %s (t/n): ", msg);
+                        char c = getchar();
+                        return (c == 't' || c == 'T') ? 1.0 : 0.0;
+                        #endif
+                    }
+                    return 0;
+                }
+                if (strcmp(n->method.name, "blad") == 0) {
+                    if (n->method.arg_count >= 1) {
+                        eval(n->method.args[0]);
+                        char *msg = n->method.args[0]->string_value;
+                        char buf[64];
+                        if (!msg) {
+                            sprintf(buf, "%g", n->method.args[0]->value);
+                            msg = buf;
+                        }
+                        #ifdef _WIN32
+                        MessageBox(NULL, msg, "Benzin Błąd", MB_OK | MB_ICONERROR);
+                        #else
+                        printf("[BŁĄD] %s\n", msg);
+                        #endif
+                    }
+                    return 0;
+                }
+                return 0;
+            }
         }
 
         Variable *var = NULL;
         if (n->method.obj->type == NODE_VARIABLE) {
             var = get_variable(n->method.obj->var_name);
+        } else {
+            eval(n->method.obj);
+            if (n->method.obj->array_value) {
+                // It's an array literal or result
+                // We need to handle it, but currently we don't have a clean way to pass it
+                // except via node fields.
+            }
+        }
+        
+        // Array methods
+        Array *arr = NULL;
+        if (var && var->type == TYPE_ARRAY) arr = var->value.arrayValue;
+        else if (n->method.obj->array_value) arr = n->method.obj->array_value;
+        
+        if (arr) {
+            if (strcmp(n->method.name, "dodaj") == 0) { // push
+                if (n->method.arg_count >= 1) {
+                    double val = eval(n->method.args[0]);
+                    if (n->method.args[0]->string_value) {
+                        array_push(arr, 0, n->method.args[0]->string_value, NULL, NULL, NULL);
+                    } else if (n->method.args[0]->array_value) {
+                        array_push(arr, 0, NULL, n->method.args[0]->array_value, NULL, NULL);
+                    } else if (n->method.args[0]->dict_value) {
+                        array_push(arr, 0, NULL, NULL, n->method.args[0]->dict_value, NULL);
+                    } else {
+                        array_push(arr, val, NULL, NULL, NULL, NULL);
+                    }
+                }
+                return 0;
+            }
+            if (strcmp(n->method.name, "usun") == 0) { // pop
+                if (arr->count > 0) {
+                    // We should return the popped value, but for now just decrement count
+                    // Ideally we should free the element if it's not referenced elsewhere
+                    arr->count--;
+                }
+                return 0;
+            }
+        }
+
+        // String methods
+        char *str = NULL;
+        if (var && var->type == TYPE_STRING) str = var->value.stringValue;
+        else if (n->method.obj->string_value) str = n->method.obj->string_value;
+        
+        if (str) {
+            if (strcmp(n->method.name, "zawiera") == 0) { // contains
+                if (n->method.arg_count >= 1) {
+                    eval(n->method.args[0]);
+                    char *sub = n->method.args[0]->string_value;
+                    if (sub && strstr(str, sub)) return 1.0;
+                    return 0.0;
+                }
+            }
         }
 
         if (var && var->type == TYPE_INSTANCE) {
@@ -4181,6 +4551,10 @@ double eval(Node *n)
             module_plik_loaded = 1;
             return 0;
         }
+        if (strcmp(path, "Okna") == 0 || strcmp(path, "okna") == 0) {
+            module_okna_loaded = 1;
+            return 0;
+        }
 
         FILE *f = fopen(path, "rb");
         if (!f) {
@@ -4228,10 +4602,22 @@ double eval(Node *n)
 }
 
 void free_node(Node *n) {
-    // Simplified free to avoid double free issues with functions
-    // In a real interpreter we would need reference counting or GC
     if (!n) return;
-    // free(n); // Leaking memory intentionally for stability in this simple version
+    
+    // Recursive free for children
+    if (n->type == NODE_BLOCK || n->type == NODE_ARRAY_LITERAL) {
+        for (int i = 0; i < n->block.count; i++) {
+            free_node(n->block.stmts[i]);
+        }
+        free(n->block.stmts);
+    }
+    
+    if (n->var_name) free(n->var_name);
+    if (n->string_value) free(n->string_value);
+    
+    // Note: We don't free array_value or dict_value here as they are managed by GC
+    
+    free(n);
 }
 
 void parse()
@@ -4352,6 +4738,7 @@ int main(int argc, char *argv[])
     return 0;
 #endif
     // printf("DEBUG: Main start\n");
+    srand(time(NULL));
 
     // fflush(stdout);
     if (argc < 2)
@@ -4382,6 +4769,7 @@ int main(int argc, char *argv[])
     src[fsize] = 0;
     fclose(file);
 
+    global_src = src; // Set global source for error reporting
     run_interpreter(src);
     
     // Print global variables only if not returning from main (which shouldn't happen)

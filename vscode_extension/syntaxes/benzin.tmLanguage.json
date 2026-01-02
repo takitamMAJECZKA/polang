@@ -83,7 +83,7 @@
     },
     "support": {
       "patterns": [
-        { "name": "support.function.benzin", "match": "\\b(pisz|podaj|usun|tekst|liczba)\\b" }
+        { "name": "support.function.benzin", "match": "\\b(pisz|podaj|usun|tekst|liczba|typ|wejscie|losuj|napis)\\b" }
       ]
     },
     "numbers": {

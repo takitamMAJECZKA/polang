@@ -1,0 +1,11 @@
+import "Okna";
+
+Okna.komunikat("Witaj w Benzin GUI!");
+
+zmienna decyzja = Okna.pytanie("Czy podoba Ci się ten język?");
+
+jezeli (decyzja) {
+    Okna.komunikat("Super! Cieszę się.");
+} inaczej {
+    Okna.blad("O nie! Przykro mi.");
+}

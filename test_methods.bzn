@@ -1,0 +1,13 @@
+pisz "Test metod tablicy:";
+zmienna lista = [];
+lista.dodaj(10);
+lista.dodaj("Tekst");
+pisz lista;
+lista.usun();
+pisz lista;
+
+pisz "Test metod stringa:";
+zmienna tekst = "Ala ma kota";
+jeżeli (tekst.zawiera("kota")) {
+    pisz "Znaleziono kota!";
+}

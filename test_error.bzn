@@ -1,0 +1,5 @@
+pisz "Test optymalizacji:";
+pisz 2 + 2 * 2;
+
+pisz "Test bledu:";
+zmienna x = ;

@@ -1,0 +1,3 @@
+pisz "Losowa 0-1: " + losuj();
+pisz "Losowa 10-20: " + losuj(10, 20);
+pisz "Losowa 10-20: " + losuj(10, 20);

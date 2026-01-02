@@ -2,7 +2,7 @@
   "name": "benzin-lang",
   "displayName": "Benzin Language Support",
   "description": "Podświetlanie składni dla języka Benzin (.bzn)",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.70.0"
   },
